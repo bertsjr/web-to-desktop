@@ -1,0 +1,94 @@
+:root {
+  --bg: #1b1f2a;
+  --bar: #11141b;
+  --bar-2: #232838;
+  --border: #2c3242;
+  --text: #e7ebf2;
+  --muted: #9aa3b2;
+  --accent: #5b8cff;
+  --danger: #ff5b6e;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+  font-family: "Segoe UI", system-ui, sans-serif; font-size: 13px; overflow: hidden; }
+.hidden { display: none !important; }
+
+/* Toolbar */
+.toolbar {
+  display: flex; align-items: center; gap: 4px;
+  height: 40px; padding: 0 6px;
+  background: var(--bar); border-bottom: 1px solid var(--border);
+  -webkit-app-region: drag;
+}
+.toolbar button, .tabstrip { -webkit-app-region: no-drag; }
+.tool {
+  width: 30px; height: 28px; border: none; border-radius: 6px;
+  background: transparent; color: var(--muted); font-size: 17px; line-height: 1; cursor: pointer;
+}
+.tool:hover { background: var(--bar-2); color: var(--text); }
+.tool:disabled { opacity: .35; cursor: default; background: transparent; }
+
+/* Tab strip */
+.tabstrip { display: flex; gap: 4px; flex: 1; overflow-x: auto; margin: 0 4px; }
+.tabstrip::-webkit-scrollbar { height: 0; }
+.tab {
+  display: flex; align-items: center; gap: 6px;
+  max-width: 200px; padding: 5px 10px; border-radius: 7px;
+  background: transparent; color: var(--muted);
+  border: 1px solid transparent; cursor: pointer; white-space: nowrap; user-select: none;
+}
+.tab:hover { background: var(--bar-2); }
+.tab.active { background: var(--bar-2); color: var(--text); border-color: var(--border); }
+.tab.active::before { content: ''; }
+.tab .label { overflow: hidden; text-overflow: ellipsis; }
+.tab .count {
+  background: var(--danger); color: #fff; font-size: 10px; font-weight: 700;
+  border-radius: 8px; padding: 0 5px; min-width: 16px; height: 16px;
+  line-height: 16px; text-align: center;
+}
+
+/* Webview area */
+.views { position: relative; height: calc(100% - 40px); background: #fff; }
+.views webview { position: absolute; }
+
+/* Split divider */
+.divider { position: absolute; z-index: 5; background: var(--border); }
+.divider:hover { background: var(--accent); }
+.divider.vertical { cursor: col-resize; transform: translateX(-3px); }
+.divider.horizontal { cursor: row-resize; transform: translateY(-3px); }
+/* Overlay captures mouse while dragging the divider (over webviews) */
+.drag-guard { position: absolute; inset: 0; z-index: 9; background: transparent; }
+
+/* Right-click menu */
+.ctx-menu {
+  position: fixed; z-index: 40; min-width: 200px; padding: 6px;
+  background: var(--bar-2); border: 1px solid var(--border);
+  border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.4);
+}
+.ctx-item { padding: 8px 10px; border-radius: 6px; cursor: pointer; color: var(--text); }
+.ctx-item:hover { background: var(--accent); color: #fff; }
+
+/* Settings drawer */
+.settings { position: fixed; inset: 0; background: rgba(0,0,0,.5); display: flex; justify-content: flex-end; z-index: 20; }
+.settings-card {
+  width: 360px; max-width: 90vw; height: 100%;
+  background: var(--bg); border-left: 1px solid var(--border);
+  padding: 18px 20px; overflow-y: auto;
+}
+.settings-head { display: flex; align-items: center; justify-content: space-between; }
+.settings-card h2 { margin: 0; font-size: 16px; }
+.settings-card h3 { margin: 14px 0 6px; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.row { display: flex; align-items: center; justify-content: space-between; padding: 11px 0; border-bottom: 1px solid var(--border); cursor: pointer; }
+.row span { font-size: 13px; }
+.row input { width: 18px; height: 18px; accent-color: var(--accent); cursor: pointer; }
+.divider-line { height: 1px; background: var(--border); margin: 16px 0 4px; }
+.actions { display: flex; gap: 10px; margin-top: 12px; }
+button.ghost, button.danger {
+  flex: 1; padding: 9px; border-radius: 8px; cursor: pointer; font-size: 13px; -webkit-app-region: no-drag;
+}
+button.ghost { background: var(--bar-2); color: var(--text); border: 1px solid var(--border); }
+button.ghost:hover { border-color: var(--muted); }
+button.danger { background: transparent; color: var(--danger); border: 1px solid var(--danger); }
+button.danger:hover { background: rgba(255,91,110,.12); }
+button.danger.full { width: 100%; margin-top: 12px; }
+.hint { color: var(--muted); font-size: 11px; margin: 8px 0 4px; }

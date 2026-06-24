@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Web to Desktop</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">▣</span>
+      <div>
+        <h1>Web to Desktop</h1>
+        <p class="sub">Turn any website into its own desktop app</p>
+      </div>
+    </div>
+    <button id="addBtn" class="primary">+ Add App</button>
+  </header>
+
+  <main>
+    <div id="empty" class="empty hidden">
+      <div class="empty-icon">🗔</div>
+      <h2>No apps yet</h2>
+      <p>Add a website and launch it as its own desktop window.</p>
+      <button id="emptyAddBtn" class="primary">+ Add your first app</button>
+    </div>
+    <section id="grid" class="grid"></section>
+  </main>
+
+  <footer class="statusbar">
+    <span id="version" class="version">v—</span>
+    <button id="checkUpdates" class="link">Check for updates</button>
+    <span id="updateStatus" class="update-status"></span>
+  </footer>
+
+  <!-- Add / Edit dialog -->
+  <div id="modal" class="modal hidden">
+    <div class="modal-card">
+      <h2 id="modalTitle">Add App</h2>
+      <label>Name
+        <input id="fName" type="text" placeholder="e.g. Gmail" autocomplete="off" />
+      </label>
+      <label>Icon emoji or image URL <span class="opt">(optional)</span>
+        <input id="fIcon" type="text" placeholder="e.g. 📧  or  https://site.com/icon.png" autocomplete="off" />
+      </label>
+
+      <div class="field-label">Tabs <span class="opt">(each tab is its own entity, with its own settings)</span></div>
+      <div id="tabRows" class="tab-rows"></div>
+      <button id="addTabRow" class="ghost small">+ Add tab</button>
+
+      <div class="field-label">App settings</div>
+      <div class="settings-grid">
+        <label class="check"><input type="checkbox" id="sTray" /> Minimize to tray on close</label>
+        <label class="check"><input type="checkbox" id="sStartup" /> Launch on Windows startup</label>
+      </div>
+
+      <p id="formError" class="error hidden"></p>
+      <div class="modal-actions">
+        <button id="cancelBtn" class="ghost">Cancel</button>
+        <button id="saveBtn" class="primary">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>

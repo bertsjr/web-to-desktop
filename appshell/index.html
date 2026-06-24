@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>App</title>
+  <link rel="stylesheet" href="appshell.css" />
+</head>
+<body>
+  <div class="toolbar">
+    <button id="back" class="tool" title="Back">‹</button>
+    <button id="forward" class="tool" title="Forward">›</button>
+    <button id="reload" class="tool" title="Reload (Ctrl+R)">⟳</button>
+    <div id="tabstrip" class="tabstrip"></div>
+    <button id="unsplitBtn" class="tool hidden" title="Unsplit">▢</button>
+    <button id="settingsBtn" class="tool" title="Settings">⚙</button>
+  </div>
+
+  <div id="views" class="views">
+    <div id="divider" class="divider hidden"></div>
+    <div id="dragGuard" class="drag-guard hidden"></div>
+  </div>
+
+  <!-- Right-click tab menu -->
+  <div id="ctxMenu" class="ctx-menu hidden"></div>
+
+  <!-- Settings drawer (active tab + app-level) -->
+  <div id="settings" class="settings hidden">
+    <div class="settings-card">
+      <div class="settings-head">
+        <h2 id="settingsTitle">Settings</h2>
+        <button id="closeSettings" class="tool">✕</button>
+      </div>
+
+      <h3 id="tabSettingsLabel">This tab</h3>
+      <label class="row"><span>Enable notifications</span>
+        <input type="checkbox" id="sNotifications" /></label>
+      <label class="row"><span>Keep cookies &amp; logins (persist)</span>
+        <input type="checkbox" id="sPersist" /></label>
+      <p class="hint">Changing “keep cookies” takes effect next time this app opens.</p>
+      <div class="actions">
+        <button id="clearCache" class="ghost">Clear cache</button>
+        <button id="clearData" class="danger">Clear cookies &amp; data</button>
+      </div>
+
+      <div class="divider-line"></div>
+      <h3>This app</h3>
+      <label class="row"><span>Minimize to tray on close</span>
+        <input type="checkbox" id="sTray" /></label>
+      <label class="row"><span>Launch on Windows startup</span>
+        <input type="checkbox" id="sStartup" /></label>
+      <button id="exitBtn" class="danger full">Exit app</button>
+      <p class="hint">“Exit app” fully closes this app even when minimize-to-tray is on.</p>
+    </div>
+  </div>
+
+  <script src="appshell.js"></script>
+</body>
+</html>
