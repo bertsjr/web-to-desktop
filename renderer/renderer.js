@@ -248,5 +248,34 @@ document.getElementById('rollback').addEventListener('click', async () => {
   } catch { updateStatus.textContent = 'Rollback failed.'; }
 });
 
-// Initial load
-(async () => render(await api.list()))();
+// ---- Activation gate ----
+const activationOverlay = document.getElementById('activationOverlay');
+const activationKey = document.getElementById('activationKey');
+const activationError = document.getElementById('activationError');
+
+document.getElementById('activateBtn').addEventListener('click', async () => {
+  activationError.classList.add('hidden');
+  const key = activationKey.value.trim();
+  if (!key) { activationError.textContent = 'Please enter a key.'; activationError.classList.remove('hidden'); return; }
+  const ok = await api.activate(key);
+  if (ok) {
+    activationOverlay.classList.add('hidden');
+    render(await api.list());
+  } else {
+    activationError.textContent = 'Invalid activation key.';
+    activationError.classList.remove('hidden');
+  }
+});
+activationKey.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') document.getElementById('activateBtn').click();
+});
+
+// Initial load — show activation gate or dashboard
+(async () => {
+  if (await api.isActivated()) {
+    render(await api.list());
+  } else {
+    activationOverlay.classList.remove('hidden');
+    activationKey.focus();
+  }
+})();

@@ -2,6 +2,8 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 // Safe, minimal bridge between the manager UI and the main process.
 contextBridge.exposeInMainWorld('api', {
+  isActivated: () => ipcRenderer.invoke('app:isActivated'),
+  activate: (key) => ipcRenderer.invoke('app:activate', key),
   list: () => ipcRenderer.invoke('apps:list'),
   add: (data) => ipcRenderer.invoke('apps:add', data),
   update: (data) => ipcRenderer.invoke('apps:update', data),

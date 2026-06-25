@@ -16,6 +16,26 @@ process.on('uncaughtException', (err) => log.error('uncaughtException', err));
 const APP_ID = 'com.bert.webtodesktop';
 app.setAppUserModelId(APP_ID);
 
+// ---------------------------------------------------------------------------
+// Activation gate — SHA-256 of the activation key (plaintext never in source).
+// Change this hash to set your own key:
+//   node -e "console.log(require('crypto').createHash('sha256').update('YOUR_KEY').digest('hex'))"
+// ---------------------------------------------------------------------------
+const ACTIVATION_HASH = 'af3c0857c4ae127dc188ec822c1e27de854de3019ea77da5f415d20e43fede22';
+const activationFile = () => path.join(app.getPath('userData'), '.activated');
+
+function isActivated() {
+  try { return fs.existsSync(activationFile()); } catch { return false; }
+}
+
+function activate(key) {
+  const hash = crypto.createHash('sha256').update(String(key)).digest('hex');
+  if (hash !== ACTIVATION_HASH) return false;
+  fs.mkdirSync(path.dirname(activationFile()), { recursive: true });
+  fs.writeFileSync(activationFile(), hash, 'utf8');
+  return true;
+}
+
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) app.quit();
 
@@ -570,6 +590,9 @@ ipcMain.handle('apps:uninstallShortcut', (_e, id) => uninstallShortcut(id));
 
 ipcMain.handle('app:openManager', () => { createManagerWindow(); return true; });
 
+ipcMain.handle('app:isActivated', () => isActivated());
+ipcMain.handle('app:activate', (_e, key) => activate(key));
+
 ipcMain.handle('app:version', () => app.getVersion());
 
 ipcMain.handle('app:checkUpdates', async () => {
@@ -767,18 +790,23 @@ app.on('second-instance', (_e, argv) => {
 if (gotLock) {
   app.whenReady().then(() => {
     syncLoginItem();
-    if (process.argv.includes('--autostart')) {
-      loadApps().filter((a) => a.settings.launchOnStartup).forEach(launchApp);
-    }
-    // Launched directly from a standalone app shortcut (--app-id=…): open just
-    // that app and skip the launcher dashboard.
-    const directId = appIdFromArgv(process.argv);
-    const directApp = directId && getApp(directId);
-    if (directApp) {
-      app.setAppUserModelId(`${APP_ID}.${directApp.id}`);
-      launchApp(directApp);
-    } else {
+    if (!isActivated()) {
+      // Not activated — always show the launcher so the user hits the gate.
       createManagerWindow();
+    } else {
+      if (process.argv.includes('--autostart')) {
+        loadApps().filter((a) => a.settings.launchOnStartup).forEach(launchApp);
+      }
+      // Launched directly from a standalone app shortcut (--app-id=…): open just
+      // that app and skip the launcher dashboard.
+      const directId = appIdFromArgv(process.argv);
+      const directApp = directId && getApp(directId);
+      if (directApp) {
+        app.setAppUserModelId(`${APP_ID}.${directApp.id}`);
+        launchApp(directApp);
+      } else {
+        createManagerWindow();
+      }
     }
     if (app.isPackaged) {
       autoUpdater.checkForUpdates().catch((e) => log.warn('update check failed', e));

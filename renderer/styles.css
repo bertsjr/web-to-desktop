@@ -264,3 +264,39 @@ button.ghost.small {
   cursor: pointer;
   flex: 0 0 auto;
 }
+
+/* ---- Activation overlay ---- */
+.activation-overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+.activation-card {
+  text-align: center;
+  max-width: 340px;
+  width: 100%;
+}
+.activation-icon {
+  font-size: 48px;
+  color: var(--accent);
+  line-height: 1;
+}
+.activation-card h2 { margin: 12px 0 4px; }
+.activation-card p { color: var(--muted); margin: 0 0 20px; font-size: 13px; }
+.activation-card input {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 14px;
+  text-align: center;
+  margin-bottom: 12px;
+}
+.activation-card input:focus { outline: none; border-color: var(--accent); }
+.full { width: 100%; }
