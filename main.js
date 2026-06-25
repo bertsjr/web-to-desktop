@@ -26,10 +26,49 @@ const TRAY_ICON = nativeImage.createFromDataURL(
   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAbklEQVR42mOI7vnPgIYtgHg6EN8E4l9QfBMqZoGuHl0zSNF/Ang6LgN2EKEZhnegG4BhMzrA5RKYn3FqJGCQBYbtuGzEIT6dARrCeDXjkb/JAI0mcg34RRUDKPYCxYFIcTRSnJCokpSpkpnIys4AYjPia5JNItsAAAAASUVORK5CYII='
 );
 
+// The launcher / default window + tray icon (replace assets/icon.png to rebrand).
+const APP_ICON = nativeImage.createFromPath(path.join(__dirname, 'assets', 'icon.png'));
+
+// Per-app icons (set at runtime from each app's configured icon or favicon).
+const appIcons = new Map(); // appId -> nativeImage
+
 const DESKTOP_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
   '(KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36 Edg/137.0.0.0';
 app.userAgentFallback = DESKTOP_UA;
+
+// Download an image URL (no CORS limits in main) into a nativeImage.
+function fetchImage(url) {
+  return new Promise((resolve) => {
+    try {
+      const req = net.request(url);
+      const chunks = [];
+      req.on('response', (res) => {
+        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          const loc = Array.isArray(res.headers.location) ? res.headers.location[0] : res.headers.location;
+          return fetchImage(loc).then(resolve);
+        }
+        res.on('data', (c) => chunks.push(c));
+        res.on('end', () => {
+          const img = nativeImage.createFromBuffer(Buffer.concat(chunks));
+          resolve(img.isEmpty() ? null : img);
+        });
+      });
+      req.on('error', () => resolve(null));
+      req.end();
+    } catch { resolve(null); }
+  });
+}
+
+// Apply an icon to an app's window(s) and its tray entry.
+function applyAppIcon(appId, img) {
+  if (!img || img.isEmpty()) return;
+  appIcons.set(appId, img);
+  const win = appWindows.get(appId);
+  if (win && !win.isDestroyed()) win.setIcon(img);
+  const tray = trays.get(appId);
+  if (tray) tray.setImage(img);
+}
 
 // ---------------------------------------------------------------------------
 // Persistent store
@@ -143,7 +182,7 @@ function createManagerWindow() {
   }
   managerWindow = new BrowserWindow({
     width: 980, height: 700, minWidth: 720, minHeight: 480,
-    title: 'Web to Desktop', backgroundColor: '#0f1115',
+    title: 'Web to Desktop', backgroundColor: '#0f1115', icon: APP_ICON,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true, nodeIntegration: false,
@@ -162,7 +201,7 @@ function sendUnread(id, count) {
 
 function ensureTray(appDef) {
   if (trays.has(appDef.id)) return;
-  const tray = new Tray(TRAY_ICON);
+  const tray = new Tray(appIcons.get(appDef.id) || APP_ICON || TRAY_ICON);
   tray.setToolTip(appDef.name);
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: `Show ${appDef.name}`, click: () => showApp(appDef.id) },
@@ -204,6 +243,7 @@ function launchApp(appDef) {
   const win = new BrowserWindow({
     width: appDef.width || 1200, height: appDef.height || 800,
     title: appDef.name, backgroundColor: '#1b1f2a', autoHideMenuBar: true,
+    icon: appIcons.get(appDef.id) || APP_ICON,
     webPreferences: {
       preload: path.join(__dirname, 'appshell', 'preload.js'),
       contextIsolation: true, nodeIntegration: false, webviewTag: true,
@@ -242,6 +282,7 @@ function detachTab(appId, tabId) {
   const win = new BrowserWindow({
     width: 1000, height: 760, title: tab.name,
     backgroundColor: '#1b1f2a', autoHideMenuBar: true,
+    icon: appIcons.get(appId) || APP_ICON,
     webPreferences: {
       preload: path.join(__dirname, 'appshell', 'preload.js'),
       contextIsolation: true, nodeIntegration: false, webviewTag: true,
@@ -529,9 +570,31 @@ ipcMain.handle('app:checkUpdates', async () => {
   if (!app.isPackaged) return { status: 'dev', message: 'Updates only run in the installed app.' };
   try {
     const r = await autoUpdater.checkForUpdates();
-    return { status: 'checked', version: r && r.updateInfo && r.updateInfo.version };
+    const v = r && r.updateInfo && r.updateInfo.version;
+    const newer = v ? cmpVersion(v, app.getVersion()) > 0 : false;
+    return { status: 'checked', version: v, newer };
   } catch (e) {
     log.warn('checkForUpdates failed', e);
+    return { status: 'error', message: String(e && e.message || e) };
+  }
+});
+
+// Apply a downloaded update (or rollback) by restarting into the new version.
+ipcMain.handle('app:installUpdate', () => { autoUpdater.quitAndInstall(); return true; });
+
+// Deliberate rollback: lift the downgrade block once and install whatever the
+// feed currently offers (the maintainer points it at the rollback target).
+ipcMain.handle('app:rollback', async () => {
+  if (!app.isPackaged) return { status: 'dev', message: 'Rollback only runs in the installed app.' };
+  rollbackMode = true;
+  autoUpdater.allowDowngrade = true;
+  log.info('Rollback requested from', app.getVersion());
+  try {
+    const r = await autoUpdater.checkForUpdates();
+    return { status: 'checked', version: r && r.updateInfo && r.updateInfo.version };
+  } catch (e) {
+    rollbackMode = false;
+    autoUpdater.allowDowngrade = false;
     return { status: 'error', message: String(e && e.message || e) };
   }
 });
@@ -596,6 +659,18 @@ ipcMain.handle('tab:detach', (_e, { appId, tabId }) => detachTab(appId, tabId));
 
 ipcMain.handle('app:exit', (_e, appId) => { quitApp(appId); return true; });
 
+// App icon: rendered emoji/letter comes as a data URL; an image/favicon URL is
+// fetched here (no CORS limits in the main process).
+ipcMain.handle('app:setIconData', (_e, { appId, dataUrl }) => {
+  try { applyAppIcon(appId, nativeImage.createFromDataURL(dataUrl)); } catch {}
+  return true;
+});
+ipcMain.handle('app:setIconUrl', async (_e, { appId, url }) => {
+  const img = await fetchImage(url);
+  if (img) applyAppIcon(appId, img);
+  return !!img;
+});
+
 // Unread badge from a shell window (app window or detached tab window).
 ipcMain.on('shell:unread', (e, { id, count }) => {
   const win = BrowserWindow.fromWebContents(e.sender);
@@ -608,13 +683,70 @@ ipcMain.on('shell:unread', (e, { id, count }) => {
 
 // ---------------------------------------------------------------------------
 // Auto-update (electron-updater, GitHub Releases)
+//
+// Policy: install only versions >= the current one (no silent downgrades), and
+// accept newer builds even if they're pre-releases (i.e. not officially
+// published as "latest"). A deliberate rollback can still be performed, which
+// temporarily lifts the downgrade block to install an older target.
 // ---------------------------------------------------------------------------
 const { autoUpdater } = require('electron-updater');
 autoUpdater.logger = log;
-autoUpdater.autoDownload = true;
-autoUpdater.on('update-available', (i) => log.info('Update available', i && i.version));
-autoUpdater.on('update-downloaded', (i) => log.info('Update downloaded', i && i.version));
-autoUpdater.on('error', (err) => log.warn('Updater error', err));
+autoUpdater.autoDownload = false;     // we decide whether to download per policy
+autoUpdater.allowDowngrade = false;   // never auto-install an older version
+autoUpdater.allowPrerelease = true;   // accept newer pre-release / unpublished builds
+
+let rollbackMode = false;
+
+// Compare dotted versions ("2026.6.2", "1.2.3-beta.1"). Returns -1 / 0 / 1.
+function cmpVersion(a, b) {
+  const parse = (v) => {
+    const [core, pre = ''] = String(v).split('-');
+    return { nums: core.split('.').map((n) => parseInt(n, 10) || 0), pre };
+  };
+  const A = parse(a);
+  const B = parse(b);
+  const len = Math.max(A.nums.length, B.nums.length);
+  for (let i = 0; i < len; i++) {
+    const d = (A.nums[i] || 0) - (B.nums[i] || 0);
+    if (d) return d > 0 ? 1 : -1;
+  }
+  if (A.pre === B.pre) return 0;
+  if (!A.pre) return 1;     // a release outranks a pre-release of the same core
+  if (!B.pre) return -1;
+  return A.pre > B.pre ? 1 : -1;
+}
+
+function sendUpdate(payload) {
+  if (managerWindow && !managerWindow.isDestroyed()) managerWindow.webContents.send('update:status', payload);
+}
+
+autoUpdater.on('update-available', (info) => {
+  const cur = app.getVersion();
+  if (rollbackMode) {
+    log.info('Rollback: downloading', info.version);
+    sendUpdate({ status: 'downloading', version: info.version, rollback: true });
+    autoUpdater.downloadUpdate();
+  } else if (cmpVersion(info.version, cur) > 0) {
+    log.info('Update available (newer)', info.version);
+    sendUpdate({ status: 'downloading', version: info.version });
+    autoUpdater.downloadUpdate();
+  } else {
+    log.warn('Refusing non-newer version', info.version, 'current', cur);
+    sendUpdate({ status: 'blocked', version: info.version, current: cur });
+  }
+});
+autoUpdater.on('download-progress', (p) => sendUpdate({ status: 'progress', percent: Math.round(p.percent) }));
+autoUpdater.on('update-not-available', (info) => sendUpdate({ status: 'current', version: info && info.version }));
+autoUpdater.on('update-downloaded', (info) => {
+  log.info('Update downloaded', info.version, 'rollback:', rollbackMode);
+  sendUpdate({ status: 'downloaded', version: info.version, rollback: rollbackMode });
+  rollbackMode = false;
+  autoUpdater.allowDowngrade = false; // re-arm the downgrade block after a rollback
+});
+autoUpdater.on('error', (err) => {
+  sendUpdate({ status: 'error', message: String(err && err.message || err) });
+  log.warn('Updater error', err);
+});
 
 // ---------------------------------------------------------------------------
 // App lifecycle
@@ -643,7 +775,7 @@ if (gotLock) {
       createManagerWindow();
     }
     if (app.isPackaged) {
-      autoUpdater.checkForUpdatesAndNotify().catch((e) => log.warn('update check failed', e));
+      autoUpdater.checkForUpdates().catch((e) => log.warn('update check failed', e));
     }
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createManagerWindow();

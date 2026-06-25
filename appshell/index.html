@@ -11,14 +11,15 @@
     <button id="forward" class="tool" title="Forward">›</button>
     <button id="reload" class="tool" title="Reload (Ctrl+R)">⟳</button>
     <div id="tabstrip" class="tabstrip"></div>
-    <button id="unsplitBtn" class="tool hidden" title="Unsplit">▢</button>
     <button id="settingsBtn" class="tool" title="Settings">⚙</button>
   </div>
 
   <div id="views" class="views">
-    <div id="divider" class="divider hidden"></div>
     <div id="dragGuard" class="drag-guard hidden"></div>
   </div>
+
+  <!-- Collapsed items (other tabs / the split group) while in split view -->
+  <div id="chips" class="chips"></div>
 
   <!-- Right-click tab menu -->
   <div id="ctxMenu" class="ctx-menu hidden"></div>

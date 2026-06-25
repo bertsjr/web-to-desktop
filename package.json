@@ -1,6 +1,6 @@
 {
   "name": "web-to-desktop-app",
-  "version": "1.0.0",
+  "version": "2026.6.2",
   "description": "Turn any website into its own Windows desktop application.",
   "main": "main.js",
   "author": "Bert",
@@ -28,6 +28,7 @@
       }
     ],
     "win": {
+      "icon": "assets/icon.ico",
       "target": [
         {
           "target": "nsis",
@@ -39,7 +40,9 @@
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
-      "createStartMenuShortcut": true
+      "createStartMenuShortcut": true,
+      "installerIcon": "assets/icon.ico",
+      "uninstallerIcon": "assets/icon.ico"
     }
   },
   "dependencies": {

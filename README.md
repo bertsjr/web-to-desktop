@@ -66,7 +66,17 @@ The app uses `electron-updater` against **GitHub Releases**. To enable it:
 2. Set a `GH_TOKEN` environment variable with a token that has `repo` scope, then run `npm run publish` to build and upload a release.
 3. Bump the `version` in `package.json` for each new release.
 
-The installed app checks for updates on launch and downloads them in the background; the dashboard footer shows the current version and a **Check for updates** button. Update checks are no-ops in `npm start` (dev) — they only run in the installed build.
+The installed app checks for updates on launch; the dashboard footer shows the current version, a **Check for updates** button, a **Restart & install** button (once an update is downloaded), and a **Roll back…** button. Update checks are no-ops in `npm start` (dev) — they only run in the installed build.
+
+### Version policy
+
+- **No downgrades.** The updater installs a version only when it is **newer than** the installed one (`allowDowngrade = false`). A version equal to or older than the current one is reported and skipped.
+- **Newer builds, even if not "official".** Pre-releases are accepted (`allowPrerelease = true`), so a newer build published as a pre-release (not marked the latest stable) will still install. Publish such builds to GitHub Releases as a pre-release.
+- Version comparison handles both calendar versions (`2026.6.2`) and semver-style tags (`1.2.3-beta.1`).
+
+### Enforcing a rollback
+
+Downgrades are blocked by default, but **Roll back…** performs a deliberate one: it lifts the block for a single check and installs whatever version the feed is currently serving, then re-arms the block. To push a fleet-wide rollback, point the GitHub Releases "latest" at the known-good older version (or re-publish it) and have users click **Roll back…** (or trigger it programmatically). Every rollback is confirmed in the UI and recorded in the log.
 
 ## Logs
 

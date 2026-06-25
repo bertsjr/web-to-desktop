@@ -13,4 +13,7 @@ contextBridge.exposeInMainWorld('api', {
   onUnread: (cb) => ipcRenderer.on('app:unread', (_e, data) => cb(data)),
   version: () => ipcRenderer.invoke('app:version'),
   checkUpdates: () => ipcRenderer.invoke('app:checkUpdates'),
+  installUpdate: () => ipcRenderer.invoke('app:installUpdate'),
+  rollback: () => ipcRenderer.invoke('app:rollback'),
+  onUpdateStatus: (cb) => ipcRenderer.on('update:status', (_e, data) => cb(data)),
 });
