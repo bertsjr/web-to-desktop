@@ -1,6 +1,6 @@
 {
   "name": "web-to-desktop-app",
-  "version": "2026.6.3",
+  "version": "2026.6.4",
   "description": "Turn any website into its own Windows desktop application.",
   "main": "main.js",
   "author": "Bert",
