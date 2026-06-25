@@ -136,10 +136,14 @@ function resolveIcon() {
 }
 
 // A site favicon is used only when no icon is configured.
-function onFavicon(favicons) {
+async function onFavicon(favicons) {
   if (state.appIcon || state.iconSet || !favicons || !favicons.length) return;
-  state.iconSet = true;
-  api.setIconUrl(APP_ID, favicons[favicons.length - 1]);
+  const url = favicons[favicons.length - 1];
+  try {
+    if (await api.setIconUrl(APP_ID, url)) {
+      state.iconSet = true;
+    }
+  } catch {}
 }
 
 function roundRect(ctx, x, y, w, h, r) {

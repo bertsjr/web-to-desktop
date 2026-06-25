@@ -48,7 +48,9 @@ function fetchImage(url) {
           const loc = Array.isArray(res.headers.location) ? res.headers.location[0] : res.headers.location;
           return fetchImage(loc).then(resolve);
         }
+        if (res.statusCode !== 200) { resolve(null); return; }
         res.on('data', (c) => chunks.push(c));
+        res.on('error', () => resolve(null));
         res.on('end', () => {
           const img = nativeImage.createFromBuffer(Buffer.concat(chunks));
           resolve(img.isEmpty() ? null : img);
@@ -361,21 +363,6 @@ function pngToIco(png) {
   return Buffer.concat([header, entry, png]);
 }
 
-// Fetch raw bytes for an http(s) URL via Electron's net (no CORS in main).
-function fetchBytes(url) {
-  return new Promise((resolve, reject) => {
-    const req = net.request(url);
-    req.on('response', (res) => {
-      const chunks = [];
-      res.on('data', (c) => chunks.push(c));
-      res.on('end', () => resolve(Buffer.concat(chunks)));
-      res.on('error', reject);
-    });
-    req.on('error', reject);
-    req.end();
-  });
-}
-
 // Rasterize an emoji/letter glyph onto a rounded background → PNG buffer.
 function renderGlyphPng(glyph) {
   return new Promise((resolve, reject) => {
@@ -383,23 +370,23 @@ function renderGlyphPng(glyph) {
       width: 256, height: 256, show: false,
       webPreferences: { offscreen: true, contextIsolation: true, nodeIntegration: false },
     });
-    const safe = JSON.stringify(glyph || '?');
-    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
-      html,body{margin:0;padding:0}</style></head><body>
-      <canvas id="c" width="256" height="256"></canvas><script>
-        const ctx = document.getElementById('c').getContext('2d');
-        const r = 48;
-        ctx.fillStyle = '#3b82f6';
-        ctx.beginPath();
-        ctx.moveTo(r,0); ctx.arcTo(256,0,256,256,r); ctx.arcTo(256,256,0,256,r);
-        ctx.arcTo(0,256,0,0,r); ctx.arcTo(0,0,256,0,r); ctx.closePath(); ctx.fill();
-        ctx.fillStyle = '#ffffff';
-        ctx.font = '700 140px "Segoe UI Emoji","Segoe UI",sans-serif';
-        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-        ctx.fillText(${safe}, 128, 138);
-        window.__png = document.getElementById('c').toDataURL('image/png');
-      </script></body></html>`;
-    win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
+    const html = '<!DOCTYPE html><html><head><meta charset="utf-8"><style>' +
+      'html,body{margin:0;padding:0}</style></head><body>' +
+      '<canvas id="c" width="256" height="256"></canvas><script>' +
+        'const ctx = document.getElementById("c").getContext("2d");' +
+        'const r = 48;' +
+        'ctx.fillStyle = "#3b82f6";' +
+        'ctx.beginPath();' +
+        'ctx.moveTo(r,0); ctx.arcTo(256,0,256,256,r); ctx.arcTo(256,256,0,256,r);' +
+        'ctx.arcTo(0,256,0,0,r); ctx.arcTo(0,0,256,0,r); ctx.closePath(); ctx.fill();' +
+        'ctx.fillStyle = "#ffffff";' +
+        'ctx.font = "700 140px \'Segoe UI Emoji\', \'Segoe UI\', sans-serif";' +
+        'ctx.textAlign = "center"; ctx.textBaseline = "middle";' +
+        'const glyph = decodeURIComponent(location.hash.slice(1));' +
+        'ctx.fillText(glyph, 128, 138);' +
+        'window.__png = document.getElementById("c").toDataURL("image/png");' +
+      '</script></body></html>';
+    win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html) + '#' + encodeURIComponent(glyph || '?'));
     win.webContents.once('did-finish-load', async () => {
       try {
         const dataUrl = await win.webContents.executeJavaScript('window.__png');
@@ -420,9 +407,8 @@ async function generateIcoForApp(appDef) {
     let png;
     const icon = (appDef.icon || '').trim();
     if (/^https?:\/\//i.test(icon)) {
-      const buf = await fetchBytes(icon);
-      const img = nativeImage.createFromBuffer(buf);
-      if (img.isEmpty()) throw new Error('icon image decode failed');
+      const img = await fetchImage(icon);
+      if (!img || img.isEmpty()) throw new Error('icon image decode failed');
       png = img.resize({ width: 256, height: 256 }).toPNG();
     } else {
       const glyph = icon || (appDef.name || '?').charAt(0).toUpperCase();
@@ -559,10 +545,12 @@ async function installShortcut(id) {
   }
   const ico = await generateIcoForApp(appDef);
   const ok = writeShortcuts(appDef, ico);
-  appDef.shortcut = { name };
-  saveApps(apps);
+  if (ok) {
+    appDef.shortcut = { name };
+    saveApps(apps);
+  }
   log.info('Installed shortcut', appDef.name, { ok });
-  return { ok, installed: true };
+  return { ok, installed: ok };
 }
 
 function uninstallShortcut(id) {
@@ -718,7 +706,7 @@ let rollbackMode = false;
 // Compare dotted versions ("2026.6.2", "1.2.3-beta.1"). Returns -1 / 0 / 1.
 function cmpVersion(a, b) {
   const parse = (v) => {
-    const [core, pre = ''] = String(v).split('-');
+    const [core, pre = ''] = String(v).replace(/^v/i, '').split('-');
     return { nums: core.split('.').map((n) => parseInt(n, 10) || 0), pre };
   };
   const A = parse(a);

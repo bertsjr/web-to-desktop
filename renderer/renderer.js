@@ -83,18 +83,29 @@ function render(apps) {
 async function toggleInstall(appDef, btn) {
   if (appDef.installed) {
     if (!confirm(`Remove the desktop & Start Menu shortcuts for "${appDef.name}"?`)) return;
-    await api.uninstallShortcut(appDef.id);
+    try {
+      await api.uninstallShortcut(appDef.id);
+    } catch (err) {
+      alert(`Failed to uninstall: ${err.message}`);
+    }
     render(await api.list());
     return;
   }
   const prev = btn.textContent;
   btn.textContent = '⏳';
   btn.disabled = true;
-  const r = await api.installShortcut(appDef.id);
-  if (!r || !r.ok) {
+  try {
+    const r = await api.installShortcut(appDef.id);
+    if (!r || !r.ok) {
+      btn.textContent = prev;
+      btn.disabled = false;
+      alert(`Could not create the desktop app for "${appDef.name}".`);
+      return;
+    }
+  } catch (err) {
     btn.textContent = prev;
     btn.disabled = false;
-    alert(`Could not create the desktop app for "${appDef.name}".`);
+    alert(`An error occurred: ${err.message}`);
     return;
   }
   render(await api.list());
