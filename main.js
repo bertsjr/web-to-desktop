@@ -13,6 +13,19 @@ log.initialize?.();
 log.info('App starting', { version: app.getVersion() });
 process.on('uncaughtException', (err) => log.error('uncaughtException', err));
 
+// Dev-only logger — writes to <projectDir>/logs/dev.log, only active when
+// running from source (npm start). Packaged builds skip it.
+const isDev = !app.isPackaged;
+const dev = isDev ? require('electron-log').create({ processType: 'main' }) : null;
+if (dev) {
+  const devLogDir = path.join(__dirname, 'logs');
+  fs.mkdirSync(devLogDir, { recursive: true });
+  dev.transports.file.resolvePathFn = () => path.join(devLogDir, 'dev.log');
+  dev.transports.console.level = false; // don't duplicate to console
+  dev.info('--- Dev log started ---', { version: app.getVersion() });
+}
+function devLog(...args) { if (dev) dev.info(...args); }
+
 const APP_ID = 'com.bert.webtodesktop';
 app.setAppUserModelId(APP_ID);
 
@@ -182,13 +195,97 @@ function setupSession(appId, tab) {
   };
   ses.setPermissionRequestHandler((_wc, permission, cb) => cb(allow(permission)));
   ses.setPermissionCheckHandler((_wc, permission) => allow(permission));
+
+  // Downloads — save to Downloads folder and open in the associated desktop app.
+  ses.on('will-download', (_e, item) => {
+    const downloadsDir = app.getPath('downloads');
+    const savePath = path.join(downloadsDir, item.getFilename());
+    item.setSavePath(savePath);
+    devLog('[download] started', {
+      filename: item.getFilename(),
+      url: item.getURL(),
+      mimeType: item.getMimeType(),
+      totalBytes: item.getTotalBytes(),
+      contentDisposition: item.getContentDisposition(),
+      savePath,
+    });
+    item.on('updated', (_ev, state) => {
+      devLog('[download] progress', { filename: item.getFilename(), state, received: item.getReceivedBytes(), total: item.getTotalBytes() });
+    });
+    item.once('done', (_ev, state) => {
+      devLog('[download] done', { filename: item.getFilename(), state, savePath });
+      if (state === 'completed') {
+        shell.openPath(savePath).then((err) => {
+          if (err) devLog('[download] openPath error:', err);
+          else devLog('[download] openPath success:', savePath);
+        });
+      }
+    });
+  });
 }
 
-// External links open in the real browser.
+// External links open in the real browser / associated desktop app.
 app.on('web-contents-created', (_e, contents) => {
-  contents.setWindowOpenHandler(({ url }) => {
-    if (/^https?:/i.test(url)) shell.openExternal(url);
+  devLog('[web-contents-created] type:', contents.getType(), 'id:', contents.id);
+
+  // Links that try to open a new window (target="_blank", window.open, etc.)
+  contents.setWindowOpenHandler(({ url, disposition }) => {
+    devLog('[setWindowOpenHandler]', { url, disposition, type: contents.getType() });
+    // about:blank popups from webviews — Outlook etc. use these to initiate downloads.
+    // Allow them in a hidden window; navigation/downloads are handled below.
+    if (url === 'about:blank' && contents.getType() === 'webview') {
+      return { action: 'allow', overrideBrowserWindowOptions: { show: false } };
+    }
+    if (url && url !== 'about:blank') {
+      shell.openExternal(url);
+    }
     return { action: 'deny' };
+  });
+
+  // When an about:blank popup is created, intercept its navigation so the
+  // real URL opens externally or triggers a download via the session handler.
+  contents.on('did-create-window', (popup) => {
+    devLog('[did-create-window] popup from', contents.getType());
+    const pc = popup.webContents;
+    pc.on('will-navigate', (e, url) => {
+      devLog('[popup will-navigate]', url);
+      e.preventDefault();
+      shell.openExternal(url);
+      popup.close();
+    });
+    // Give the popup time for JS to run (e.g. Outlook sets window.location
+    // after about:blank loads). Clean up after 30s if nothing happened.
+    setTimeout(() => {
+      if (!popup.isDestroyed()) {
+        devLog('[popup] closing idle popup after timeout');
+        popup.close();
+      }
+    }, 30000);
+  });
+
+  // For webview guest pages: intercept main-frame cross-origin navigations and
+  // non-http protocols, opening them externally instead of inside the webview.
+  contents.on('will-navigate', (e, url) => {
+    const cType = contents.getType();
+    devLog('[will-navigate]', { url, contentType: cType, currentURL: contents.getURL() });
+    if (cType !== 'webview') return;
+    try {
+      const dest = new URL(url);
+      // Non-http(s) protocols → open with OS handler (Excel, Teams, etc.)
+      if (!/^https?:$/i.test(dest.protocol)) {
+        e.preventDefault();
+        shell.openExternal(url);
+        devLog('[will-navigate] → openExternal (protocol)', url);
+        return;
+      }
+      // Different origin → open in default browser
+      const curr = contents.getURL();
+      if (curr && new URL(curr).origin !== dest.origin) {
+        e.preventDefault();
+        shell.openExternal(url);
+        devLog('[will-navigate] → openExternal (cross-origin)', url);
+      }
+    } catch (err) { devLog('[will-navigate] URL parse error:', err.message, url); }
   });
 });
 
