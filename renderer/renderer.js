@@ -273,9 +273,9 @@ activationKey.addEventListener('keydown', (e) => {
 // Initial load — show activation gate or dashboard
 (async () => {
   if (await api.isActivated()) {
+    activationOverlay.classList.add('hidden');
     render(await api.list());
   } else {
-    activationOverlay.classList.remove('hidden');
     activationKey.focus();
   }
 })();

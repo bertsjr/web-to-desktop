@@ -29,11 +29,16 @@ function isActivated() {
 }
 
 function activate(key) {
-  const hash = crypto.createHash('sha256').update(String(key)).digest('hex');
-  if (hash !== ACTIVATION_HASH) return false;
-  fs.mkdirSync(path.dirname(activationFile()), { recursive: true });
-  fs.writeFileSync(activationFile(), hash, 'utf8');
-  return true;
+  try {
+    const hash = crypto.createHash('sha256').update(String(key)).digest('hex');
+    if (hash !== ACTIVATION_HASH) return false;
+    fs.mkdirSync(path.dirname(activationFile()), { recursive: true });
+    fs.writeFileSync(activationFile(), hash, 'utf8');
+    return true;
+  } catch (err) {
+    log.error('Failed to save activation state:', err);
+    return false;
+  }
 }
 
 const gotLock = app.requestSingleInstanceLock();
@@ -781,6 +786,7 @@ autoUpdater.on('error', (err) => {
 // App lifecycle
 // ---------------------------------------------------------------------------
 app.on('second-instance', (_e, argv) => {
+  if (!isActivated()) { createManagerWindow(); return; }
   const id = appIdFromArgv(argv);
   const a = id && getApp(id);
   if (a) { launchApp(a); showApp(a.id); }
