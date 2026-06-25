@@ -83,6 +83,7 @@ function buildTab(tab, insertIndex = null) {
 
   const wv = document.createElement('webview');
   wv.setAttribute('partition', tab._partition);
+  wv.setAttribute('allowpopups', '');
   wv.setAttribute('src', tab.url || 'about:blank');
   wv.dataset.tabId = tab.id;
   wv.addEventListener('page-title-updated', (e) => onTitle(tab.id, e.title));
