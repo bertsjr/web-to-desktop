@@ -215,10 +215,8 @@ function setupSession(appId, tab) {
     item.once('done', (_ev, state) => {
       devLog('[download] done', { filename: item.getFilename(), state, savePath });
       if (state === 'completed') {
-        shell.openPath(savePath).then((err) => {
-          if (err) devLog('[download] openPath error:', err);
-          else devLog('[download] openPath success:', savePath);
-        });
+        devLog('[download] saved to', savePath);
+        shell.showItemInFolder(savePath);
       }
     });
   });
@@ -278,9 +276,16 @@ app.on('web-contents-created', (_e, contents) => {
         devLog('[will-navigate] → openExternal (protocol)', url);
         return;
       }
-      // Different origin → open in default browser
+      // Different origin — if it looks like a file download, let the
+      // webview handle it so the session's will-download handler fires
+      // (preserving auth cookies). Otherwise open in default browser.
       const curr = contents.getURL();
       if (curr && new URL(curr).origin !== dest.origin) {
+        const downloadExts = /\.(docx?|xlsx?|pptx?|pdf|zip|rar|7z|gz|tar|csv|txt|exe|msi|dmg|pkg|ics|eml|msg|odt|ods|odp|rtf|mp3|mp4|wav|avi|mov|png|jpe?g|gif|svg|bmp|webp)(\?.*)?$/i;
+        if (downloadExts.test(dest.pathname)) {
+          devLog('[will-navigate] → allowing download URL (cross-origin)', url);
+          return;
+        }
         e.preventDefault();
         shell.openExternal(url);
         devLog('[will-navigate] → openExternal (cross-origin)', url);
