@@ -333,3 +333,20 @@ document.getElementById('clearData').addEventListener('click', async (e) => {
   setTimeout(() => (e.target.textContent = 'Clear cookies & data'), 1500);
 });
 document.getElementById('exitBtn').addEventListener('click', () => api.exit(APP_ID));
+
+// ---- Open launcher / check for updates / version ----
+document.getElementById('openLauncherBtn').addEventListener('click', () => api.openManager());
+
+const updateStatus = document.getElementById('updateStatus');
+(async () => {
+  try { document.getElementById('appVersion').textContent = 'v' + (await api.version()); } catch {}
+})();
+document.getElementById('checkUpdatesBtn').addEventListener('click', async () => {
+  updateStatus.textContent = '— Checking…';
+  try {
+    const r = await api.checkUpdates();
+    if (r.status === 'dev') updateStatus.textContent = '— ' + r.message;
+    else if (r.status === 'error') updateStatus.textContent = '— Update check failed.';
+    else updateStatus.textContent = r.version ? `— Latest: v${r.version}` : '— Up to date.';
+  } catch { updateStatus.textContent = '— Update check failed.'; }
+});
