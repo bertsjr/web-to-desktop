@@ -48,7 +48,9 @@ function fetchImage(url) {
           const loc = Array.isArray(res.headers.location) ? res.headers.location[0] : res.headers.location;
           return fetchImage(loc).then(resolve);
         }
+        if (res.statusCode !== 200) { resolve(null); return; }
         res.on('data', (c) => chunks.push(c));
+        res.on('error', () => resolve(null));
         res.on('end', () => {
           const img = nativeImage.createFromBuffer(Buffer.concat(chunks));
           resolve(img.isEmpty() ? null : img);
@@ -234,11 +236,23 @@ function quitApp(id) {
   destroyTray(id);
 }
 
+function loadCachedIcon(appId) {
+  if (appIcons.has(appId)) return;
+  try {
+    const ico = iconCachePath(appId);
+    if (fs.existsSync(ico)) {
+      const img = nativeImage.createFromPath(ico);
+      if (!img.isEmpty()) appIcons.set(appId, img);
+    }
+  } catch {}
+}
+
 function launchApp(appDef) {
   const existing = appWindows.get(appDef.id);
   if (existing && !existing.isDestroyed()) { existing.show(); existing.focus(); return; }
 
   appDef.tabs.forEach((t) => setupSession(appDef.id, t));
+  loadCachedIcon(appDef.id);
 
   const win = new BrowserWindow({
     width: appDef.width || 1200, height: appDef.height || 800,
@@ -279,6 +293,7 @@ function detachTab(appId, tabId) {
   if (open && !open.isDestroyed()) { open.focus(); return true; }
 
   setupSession(appId, tab);
+  loadCachedIcon(appId);
   const win = new BrowserWindow({
     width: 1000, height: 760, title: tab.name,
     backgroundColor: '#1b1f2a', autoHideMenuBar: true,
@@ -315,6 +330,139 @@ function detachTab(appId, tabId) {
 }
 
 // ---------------------------------------------------------------------------
+// Standalone desktop apps — per-app .ico generation + Windows shortcuts
+// ---------------------------------------------------------------------------
+function appIdFromArgv(argv) {
+  const a = (argv || []).find((x) => typeof x === 'string' && x.startsWith('--app-id='));
+  return a ? a.slice('--app-id='.length) : null;
+}
+
+function sanitizeFileName(name) {
+  return String(name || 'App').replace(/[\\/:*?"<>|]/g, '').trim() || 'App';
+}
+
+function iconCachePath(id) {
+  return path.join(app.getPath('userData'), 'icons', `${id}.ico`);
+}
+
+// Wrap a single PNG into a minimal ICO container (Vista+ supports PNG entries).
+function pngToIco(png) {
+  const header = Buffer.alloc(6);
+  header.writeUInt16LE(0, 0); // reserved
+  header.writeUInt16LE(1, 2); // type: icon
+  header.writeUInt16LE(1, 4); // image count
+  const entry = Buffer.alloc(16);
+  entry.writeUInt8(0, 0);     // width  (0 = 256)
+  entry.writeUInt8(0, 1);     // height (0 = 256)
+  entry.writeUInt8(0, 2);     // palette
+  entry.writeUInt8(0, 3);     // reserved
+  entry.writeUInt16LE(1, 4);  // color planes
+  entry.writeUInt16LE(32, 6); // bits per pixel
+  entry.writeUInt32LE(png.length, 8);  // image size
+  entry.writeUInt32LE(6 + 16, 12);     // offset to image data
+  return Buffer.concat([header, entry, png]);
+}
+
+// Rasterize an emoji/letter glyph onto a rounded background → PNG buffer.
+function renderGlyphPng(glyph) {
+  return new Promise((resolve, reject) => {
+    const win = new BrowserWindow({
+      width: 256, height: 256, show: false,
+      webPreferences: { offscreen: true, contextIsolation: true, nodeIntegration: false },
+    });
+    const html = '<!DOCTYPE html><html><head><meta charset="utf-8"><style>' +
+      'html,body{margin:0;padding:0}</style></head><body>' +
+      '<canvas id="c" width="256" height="256"></canvas><script>' +
+        'const ctx = document.getElementById("c").getContext("2d");' +
+        'const r = 48;' +
+        'ctx.fillStyle = "#3b82f6";' +
+        'ctx.beginPath();' +
+        'ctx.moveTo(r,0); ctx.arcTo(256,0,256,256,r); ctx.arcTo(256,256,0,256,r);' +
+        'ctx.arcTo(0,256,0,0,r); ctx.arcTo(0,0,256,0,r); ctx.closePath(); ctx.fill();' +
+        'ctx.fillStyle = "#ffffff";' +
+        'ctx.font = "700 140px \'Segoe UI Emoji\', \'Segoe UI\', sans-serif";' +
+        'ctx.textAlign = "center"; ctx.textBaseline = "middle";' +
+        'const glyph = decodeURIComponent(location.hash.slice(1));' +
+        'ctx.fillText(glyph, 128, 138);' +
+        'window.__png = document.getElementById("c").toDataURL("image/png");' +
+      '</script></body></html>';
+    win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html) + '#' + encodeURIComponent(glyph || '?'));
+    win.webContents.once('did-finish-load', async () => {
+      try {
+        const dataUrl = await win.webContents.executeJavaScript('window.__png');
+        const png = Buffer.from(String(dataUrl).split(',')[1], 'base64');
+        resolve(png);
+      } catch (e) { reject(e); }
+      finally { win.destroy(); }
+    });
+    win.webContents.once('did-fail-load', (_e, code, desc) => {
+      win.destroy(); reject(new Error(`glyph render failed: ${desc}`));
+    });
+  });
+}
+
+// Build (and cache) a per-app .ico; returns its path, or null on failure.
+async function generateIcoForApp(appDef) {
+  try {
+    let png;
+    const icon = (appDef.icon || '').trim();
+    if (/^https?:\/\//i.test(icon)) {
+      const img = await fetchImage(icon);
+      if (!img || img.isEmpty()) throw new Error('icon image decode failed');
+      png = img.resize({ width: 256, height: 256 }).toPNG();
+    } else {
+      const glyph = icon || (appDef.name || '?').charAt(0).toUpperCase();
+      png = await renderGlyphPng(glyph);
+    }
+    const out = iconCachePath(appDef.id);
+    fs.mkdirSync(path.dirname(out), { recursive: true });
+    fs.writeFileSync(out, pngToIco(png));
+    return out;
+  } catch (e) {
+    log.warn('generateIcoForApp failed', e);
+    return null;
+  }
+}
+
+function shortcutPaths(name) {
+  const file = `${sanitizeFileName(name)}.lnk`;
+  return {
+    desktop: path.join(app.getPath('desktop'), file),
+    startMenu: path.join(
+      app.getPath('appData'), 'Microsoft', 'Windows', 'Start Menu', 'Programs', file
+    ),
+  };
+}
+
+function writeShortcuts(appDef, icoPath) {
+  const args = app.isPackaged
+    ? `--app-id=${appDef.id}`
+    : `"${app.getAppPath()}" --app-id=${appDef.id}`;
+  const opts = {
+    target: process.execPath,
+    args,
+    description: appDef.name,
+    icon: icoPath || process.execPath,
+    iconIndex: 0,
+    appUserModelId: `${APP_ID}.${appDef.id}`,
+  };
+  const { desktop, startMenu } = shortcutPaths(appDef.name);
+  fs.mkdirSync(path.dirname(startMenu), { recursive: true });
+  let ok = true;
+  for (const p of [desktop, startMenu]) {
+    if (!shell.writeShortcutLink(p, 'create', opts)) ok = false;
+  }
+  return ok;
+}
+
+function removeShortcutFiles(name) {
+  const { desktop, startMenu } = shortcutPaths(name);
+  for (const p of [desktop, startMenu]) {
+    try { if (fs.existsSync(p)) fs.unlinkSync(p); } catch (e) { log.warn('unlink shortcut failed', p, e); }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Launch-on-login
 // ---------------------------------------------------------------------------
 function syncLoginItem() {
@@ -325,7 +473,7 @@ function syncLoginItem() {
 // ---------------------------------------------------------------------------
 // IPC — manager dashboard
 // ---------------------------------------------------------------------------
-ipcMain.handle('apps:list', () => loadApps());
+ipcMain.handle('apps:list', () => loadApps().map((a) => ({ ...a, installed: !!a.shortcut })));
 
 ipcMain.handle('apps:add', (_e, data) => {
   const apps = loadApps();
@@ -340,10 +488,12 @@ ipcMain.handle('apps:add', (_e, data) => {
   apps.push(appDef);
   saveApps(apps);
   syncLoginItem();
-  return apps;
+  // Pre-cache the icon so it's available for the taskbar on first launch.
+  generateIcoForApp(appDef).catch(() => {});
+  return apps.map((a) => ({ ...a, installed: !!a.shortcut }));
 });
 
-ipcMain.handle('apps:update', (_e, data) => {
+ipcMain.handle('apps:update', async (_e, data) => {
   const apps = loadApps();
   const idx = apps.findIndex((a) => a.id === data.id);
   if (idx !== -1) {
@@ -356,16 +506,25 @@ ipcMain.handle('apps:update', (_e, data) => {
     });
     saveApps(apps);
     syncLoginItem();
+    // Re-cache the icon so the taskbar picks it up on next launch.
+    await generateIcoForApp(apps[idx]).catch(() => {});
+    appIcons.delete(apps[idx].id); // clear stale in-memory icon
+    // Keep an installed app's shortcut in sync with its (possibly new) name/icon.
+    if (apps[idx].shortcut) await installShortcut(apps[idx].id);
   }
-  return apps;
+  return loadApps().map((a) => ({ ...a, installed: !!a.shortcut }));
 });
 
 ipcMain.handle('apps:remove', (_e, id) => {
-  const apps = loadApps().filter((a) => a.id !== id);
+  const all = loadApps();
+  const gone = all.find((a) => a.id === id);
+  if (gone && gone.shortcut) removeShortcutFiles(gone.shortcut.name);
+  try { fs.unlinkSync(iconCachePath(id)); } catch {}
+  const apps = all.filter((a) => a.id !== id);
   saveApps(apps);
   quitApp(id);
   syncLoginItem();
-  return apps;
+  return apps.map((a) => ({ ...a, installed: !!a.shortcut }));
 });
 
 ipcMain.handle('apps:launch', (_e, id) => {
@@ -373,6 +532,43 @@ ipcMain.handle('apps:launch', (_e, id) => {
   if (appDef) launchApp(appDef);
   return true;
 });
+
+// Create/refresh Desktop + Start Menu shortcuts that launch this app standalone.
+async function installShortcut(id) {
+  const apps = loadApps();
+  const appDef = apps.find((a) => a.id === id);
+  if (!appDef) return { ok: false, installed: false };
+  const name = sanitizeFileName(appDef.name);
+  // Renamed since last install? Clear the stale .lnk files first.
+  if (appDef.shortcut && appDef.shortcut.name && appDef.shortcut.name !== name) {
+    removeShortcutFiles(appDef.shortcut.name);
+  }
+  const ico = await generateIcoForApp(appDef);
+  const ok = writeShortcuts(appDef, ico);
+  if (ok) {
+    appDef.shortcut = { name };
+    saveApps(apps);
+  }
+  log.info('Installed shortcut', appDef.name, { ok });
+  return { ok, installed: ok };
+}
+
+function uninstallShortcut(id) {
+  const apps = loadApps();
+  const appDef = apps.find((a) => a.id === id);
+  if (!appDef) return { ok: false, installed: false };
+  removeShortcutFiles((appDef.shortcut && appDef.shortcut.name) || appDef.name);
+  try { fs.unlinkSync(iconCachePath(id)); } catch {}
+  delete appDef.shortcut;
+  saveApps(apps);
+  log.info('Uninstalled shortcut', appDef.name);
+  return { ok: true, installed: false };
+}
+
+ipcMain.handle('apps:installShortcut', (_e, id) => installShortcut(id));
+ipcMain.handle('apps:uninstallShortcut', (_e, id) => uninstallShortcut(id));
+
+ipcMain.handle('app:openManager', () => { createManagerWindow(); return true; });
 
 ipcMain.handle('app:version', () => app.getVersion());
 
@@ -510,7 +706,7 @@ let rollbackMode = false;
 // Compare dotted versions ("2026.6.2", "1.2.3-beta.1"). Returns -1 / 0 / 1.
 function cmpVersion(a, b) {
   const parse = (v) => {
-    const [core, pre = ''] = String(v).split('-');
+    const [core, pre = ''] = String(v).replace(/^v/i, '').split('-');
     return { nums: core.split('.').map((n) => parseInt(n, 10) || 0), pre };
   };
   const A = parse(a);
@@ -561,7 +757,12 @@ autoUpdater.on('error', (err) => {
 // ---------------------------------------------------------------------------
 // App lifecycle
 // ---------------------------------------------------------------------------
-app.on('second-instance', () => createManagerWindow());
+app.on('second-instance', (_e, argv) => {
+  const id = appIdFromArgv(argv);
+  const a = id && getApp(id);
+  if (a) { launchApp(a); showApp(a.id); }
+  else createManagerWindow();
+});
 
 if (gotLock) {
   app.whenReady().then(() => {
@@ -569,7 +770,16 @@ if (gotLock) {
     if (process.argv.includes('--autostart')) {
       loadApps().filter((a) => a.settings.launchOnStartup).forEach(launchApp);
     }
-    createManagerWindow();
+    // Launched directly from a standalone app shortcut (--app-id=…): open just
+    // that app and skip the launcher dashboard.
+    const directId = appIdFromArgv(process.argv);
+    const directApp = directId && getApp(directId);
+    if (directApp) {
+      app.setAppUserModelId(`${APP_ID}.${directApp.id}`);
+      launchApp(directApp);
+    } else {
+      createManagerWindow();
+    }
     if (app.isPackaged) {
       autoUpdater.checkForUpdates().catch((e) => log.warn('update check failed', e));
     }

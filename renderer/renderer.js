@@ -63,18 +63,52 @@ function render(apps) {
       <div class="card-url">${summaryLine(appDef)}</div>
       <div class="card-actions">
         <button class="primary launch">Launch</button>
+        <button class="icon-btn install" title="${appDef.installed ? 'Installed as a desktop app — click to remove' : 'Install as a desktop app'}">${appDef.installed ? '✅' : '📌'}</button>
         <button class="icon-btn edit" title="Edit">✎</button>
         <button class="icon-btn del" title="Delete">🗑</button>
       </div>
     `;
     applyBadge(card, unread.get(appDef.id) || 0);
     card.querySelector('.launch').addEventListener('click', () => api.launch(appDef.id));
+    card.querySelector('.install').addEventListener('click', (e) => toggleInstall(appDef, e.currentTarget));
     card.querySelector('.edit').addEventListener('click', () => openModal(appDef));
     card.querySelector('.del').addEventListener('click', async () => {
       if (confirm(`Delete "${appDef.name}"?`)) render(await api.remove(appDef.id));
     });
     grid.appendChild(card);
   }
+}
+
+// ---- Install / remove as a standalone desktop app ----
+async function toggleInstall(appDef, btn) {
+  if (appDef.installed) {
+    if (!confirm(`Remove the desktop & Start Menu shortcuts for "${appDef.name}"?`)) return;
+    try {
+      await api.uninstallShortcut(appDef.id);
+    } catch (err) {
+      alert(`Failed to uninstall: ${err.message}`);
+    }
+    render(await api.list());
+    return;
+  }
+  const prev = btn.textContent;
+  btn.textContent = '⏳';
+  btn.disabled = true;
+  try {
+    const r = await api.installShortcut(appDef.id);
+    if (!r || !r.ok) {
+      btn.textContent = prev;
+      btn.disabled = false;
+      alert(`Could not create the desktop app for "${appDef.name}".`);
+      return;
+    }
+  } catch (err) {
+    btn.textContent = prev;
+    btn.disabled = false;
+    alert(`An error occurred: ${err.message}`);
+    return;
+  }
+  render(await api.list());
 }
 
 // ---- Tab-row editor (each tab carries its own settings) ----
