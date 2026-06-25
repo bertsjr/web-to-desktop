@@ -234,11 +234,23 @@ function quitApp(id) {
   destroyTray(id);
 }
 
+function loadCachedIcon(appId) {
+  if (appIcons.has(appId)) return;
+  try {
+    const ico = iconCachePath(appId);
+    if (fs.existsSync(ico)) {
+      const img = nativeImage.createFromPath(ico);
+      if (!img.isEmpty()) appIcons.set(appId, img);
+    }
+  } catch {}
+}
+
 function launchApp(appDef) {
   const existing = appWindows.get(appDef.id);
   if (existing && !existing.isDestroyed()) { existing.show(); existing.focus(); return; }
 
   appDef.tabs.forEach((t) => setupSession(appDef.id, t));
+  loadCachedIcon(appDef.id);
 
   const win = new BrowserWindow({
     width: appDef.width || 1200, height: appDef.height || 800,
@@ -279,6 +291,7 @@ function detachTab(appId, tabId) {
   if (open && !open.isDestroyed()) { open.focus(); return true; }
 
   setupSession(appId, tab);
+  loadCachedIcon(appId);
   const win = new BrowserWindow({
     width: 1000, height: 760, title: tab.name,
     backgroundColor: '#1b1f2a', autoHideMenuBar: true,
@@ -489,6 +502,8 @@ ipcMain.handle('apps:add', (_e, data) => {
   apps.push(appDef);
   saveApps(apps);
   syncLoginItem();
+  // Pre-cache the icon so it's available for the taskbar on first launch.
+  generateIcoForApp(appDef).catch(() => {});
   return apps.map((a) => ({ ...a, installed: !!a.shortcut }));
 });
 
@@ -505,6 +520,9 @@ ipcMain.handle('apps:update', async (_e, data) => {
     });
     saveApps(apps);
     syncLoginItem();
+    // Re-cache the icon so the taskbar picks it up on next launch.
+    await generateIcoForApp(apps[idx]).catch(() => {});
+    appIcons.delete(apps[idx].id); // clear stale in-memory icon
     // Keep an installed app's shortcut in sync with its (possibly new) name/icon.
     if (apps[idx].shortcut) await installShortcut(apps[idx].id);
   }
