@@ -11,6 +11,8 @@ contextBridge.exposeInMainWorld('api', {
   clearData: (appId, tabId) => ipcRenderer.invoke('app:clearData', { appId, tabId }),
   detach: (appId, tabId) => ipcRenderer.invoke('tab:detach', { appId, tabId }),
   exit: (appId) => ipcRenderer.invoke('app:exit', appId),
+  setIconData: (appId, dataUrl) => ipcRenderer.invoke('app:setIconData', { appId, dataUrl }),
+  setIconUrl: (appId, url) => ipcRenderer.invoke('app:setIconUrl', { appId, url }),
   unread: (id, count) => ipcRenderer.send('shell:unread', { id, count }),
   onTabDetached: (cb) => ipcRenderer.on('shell:tabDetached', (_e, d) => cb(d)),
   onTabReturned: (cb) => ipcRenderer.on('shell:tabReturned', (_e, d) => cb(d)),

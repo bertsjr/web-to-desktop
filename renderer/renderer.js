@@ -170,17 +170,48 @@ document.addEventListener('keydown', (e) => {
 
 // ---- Version + updates ----
 const updateStatus = document.getElementById('updateStatus');
+const installBtn = document.getElementById('installUpdate');
 (async () => {
   try { document.getElementById('version').textContent = 'v' + (await api.version()); } catch {}
 })();
+
+// Live update status pushed from the main process (policy enforced there).
+api.onUpdateStatus((d) => {
+  switch (d.status) {
+    case 'downloading': updateStatus.textContent = `Downloading v${d.version}${d.rollback ? ' (rollback)' : ''}…`; break;
+    case 'progress': updateStatus.textContent = `Downloading… ${d.percent}%`; break;
+    case 'downloaded':
+      updateStatus.textContent = `v${d.version} ready${d.rollback ? ' (rollback)' : ''}.`;
+      installBtn.classList.remove('hidden');
+      break;
+    case 'blocked': updateStatus.textContent = `v${d.version} is not newer than v${d.current} — skipped.`; break;
+    case 'current': updateStatus.textContent = 'Up to date.'; break;
+    case 'error': updateStatus.textContent = 'Update error.'; break;
+  }
+});
+
 document.getElementById('checkUpdates').addEventListener('click', async () => {
   updateStatus.textContent = 'Checking…';
   try {
     const r = await api.checkUpdates();
     if (r.status === 'dev') updateStatus.textContent = r.message;
     else if (r.status === 'error') updateStatus.textContent = 'Update check failed.';
-    else updateStatus.textContent = r.version ? `Latest: v${r.version}` : 'Up to date.';
+    else if (r.newer) updateStatus.textContent = `Found v${r.version}…`;
+    else updateStatus.textContent = 'Up to date.';
   } catch { updateStatus.textContent = 'Update check failed.'; }
+});
+
+installBtn.addEventListener('click', () => api.installUpdate());
+
+document.getElementById('rollback').addEventListener('click', async () => {
+  if (!confirm('Roll back to the version the update feed is currently serving? This installs an older build and will restart the app.')) return;
+  updateStatus.textContent = 'Checking rollback…';
+  try {
+    const r = await api.rollback();
+    if (r.status === 'dev') updateStatus.textContent = r.message;
+    else if (r.status === 'error') updateStatus.textContent = 'Rollback failed.';
+    else updateStatus.textContent = r.version ? `Rolling back to v${r.version}…` : 'No rollback target found.';
+  } catch { updateStatus.textContent = 'Rollback failed.'; }
 });
 
 // Initial load
