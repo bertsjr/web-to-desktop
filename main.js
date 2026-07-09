@@ -4,15 +4,6 @@ const fs = require('fs');
 const crypto = require('crypto');
 const log = require('electron-log');
 
-// Quiet Chromium's native stderr logging. Window capture emits a benign, noisy
-// "wgc_capture_session ProcessFrame failed ... using existing frame" line (WGC
-// warm-up; it reuses the last good frame and capture works). This only filters
-// Chromium's C++ stderr — electron-log's main.log/dev.log are unaffected. Set
-// WTD_VERBOSE=1 to restore full Chromium logging when debugging.
-if (!process.env.WTD_VERBOSE) {
-  app.commandLine.appendSwitch('log-level', '3'); // 3 = FATAL only (drops ERROR/WARNING/INFO)
-}
-
 // ---------------------------------------------------------------------------
 // Logging — written to <userData>/logs/main.log (always writable on Windows).
 // ---------------------------------------------------------------------------

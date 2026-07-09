@@ -6,7 +6,7 @@
   "author": "Bert",
   "license": "MIT",
   "scripts": {
-    "start": "electron .",
+    "start": "node scripts/dev.js",
     "dist": "electron-builder --win",
     "publish": "electron-builder --win --publish always"
   },
