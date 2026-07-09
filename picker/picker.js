@@ -3,6 +3,7 @@
 const grid = document.getElementById('grid');
 const shareBtn = document.getElementById('share');
 const cancelBtn = document.getElementById('cancel');
+const audioBox = document.getElementById('audio');
 const tabs = [...document.querySelectorAll('.tab')];
 
 let sources = [];
@@ -60,7 +61,7 @@ function select(id, card) {
 }
 
 function confirm() {
-  if (selectedId) window.picker.choose(selectedId);
+  if (selectedId) window.picker.choose(selectedId, audioBox.checked);
 }
 
 tabs.forEach((tab) => tab.addEventListener('click', () => {
@@ -73,8 +74,10 @@ shareBtn.addEventListener('click', confirm);
 cancelBtn.addEventListener('click', () => window.picker.cancel());
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') window.picker.cancel(); });
 
-window.picker.list().then((list) => {
+window.picker.list().then(({ sources: list, audioRequested }) => {
   sources = list;
+  // Pre-check "Share system audio" when the app actually asked for audio.
+  audioBox.checked = !!audioRequested;
   // Default to whichever tab actually has sources.
   if (!sources.some((s) => s.type === 'screen') && sources.some((s) => s.type === 'window')) {
     activeType = 'window';

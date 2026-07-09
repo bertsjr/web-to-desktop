@@ -187,7 +187,7 @@ function partitionFor(tab) {
 // getDisplayMedia callback so the picker window's IPC can resolve the request.
 let activePicker = null;
 
-async function openSourcePicker(parentWin, callback) {
+async function openSourcePicker(parentWin, callback, audioRequested) {
   // Resolve any in-flight picker as a cancel before opening a new one.
   if (activePicker) activePicker.finish(null);
 
@@ -224,35 +224,42 @@ async function openSourcePicker(parentWin, callback) {
   win.removeMenu();
 
   let settled = false;
-  const finish = (source) => {
+  // Windows can capture system audio via the 'loopback' audio source. We only
+  // request it when the user opts in (checkbox), since loopback grabs ALL
+  // system audio, not just the shared window.
+  const finish = (source, withAudio) => {
     if (settled) return;
     settled = true;
     activePicker = null;
-    try { callback(source ? { video: source } : undefined); }
-    catch (err) { devLog('[display-media] callback failed', { error: String(err) }); }
+    try {
+      callback(source ? { video: source, audio: withAudio ? 'loopback' : undefined } : undefined);
+    } catch (err) { devLog('[display-media] callback failed', { error: String(err) }); }
     if (!win.isDestroyed()) win.close();
   };
 
-  activePicker = { sources, finish };
+  activePicker = { sources, audioRequested: !!audioRequested, finish };
   // Closing the window (X, Esc, cancel) with nothing chosen == deny the request.
   win.on('closed', () => finish(null));
   win.loadFile(path.join(__dirname, 'picker', 'index.html'));
 }
 
 ipcMain.handle('picker:list', () => {
-  if (!activePicker) return [];
-  return activePicker.sources.map((s) => ({
-    id: s.id,
-    name: s.name,
-    type: s.id.startsWith('screen:') ? 'screen' : 'window',
-    thumbnail: s.thumbnail.toDataURL(),
-    appIcon: s.appIcon && !s.appIcon.isEmpty() ? s.appIcon.toDataURL() : null,
-  }));
+  if (!activePicker) return { sources: [], audioRequested: false };
+  return {
+    audioRequested: activePicker.audioRequested,
+    sources: activePicker.sources.map((s) => ({
+      id: s.id,
+      name: s.name,
+      type: s.id.startsWith('screen:') ? 'screen' : 'window',
+      thumbnail: s.thumbnail.toDataURL(),
+      appIcon: s.appIcon && !s.appIcon.isEmpty() ? s.appIcon.toDataURL() : null,
+    })),
+  };
 });
-ipcMain.on('picker:choose', (_e, id) => {
+ipcMain.on('picker:choose', (_e, { id, audio }) => {
   if (!activePicker) return;
   const source = activePicker.sources.find((s) => s.id === id) || null;
-  activePicker.finish(source);
+  activePicker.finish(source, !!audio);
 });
 ipcMain.on('picker:cancel', () => { if (activePicker) activePicker.finish(null); });
 
@@ -279,8 +286,8 @@ function setupSession(appId, tab) {
   // misleading "couldn't access your camera" toast. We show our own picker so
   // the user can choose which screen or window to share (Electron's
   // useSystemPicker is not honored on Windows for this Electron version).
-  ses.setDisplayMediaRequestHandler((_request, callback) => {
-    openSourcePicker(BrowserWindow.getFocusedWindow(), callback);
+  ses.setDisplayMediaRequestHandler((request, callback) => {
+    openSourcePicker(BrowserWindow.getFocusedWindow(), callback, !!request.audioRequested);
   });
 
   // Downloads — save to Downloads folder and open in the associated desktop app.

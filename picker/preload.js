@@ -4,8 +4,8 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('picker', {
-  // Returns [{ id, name, type: 'screen'|'window', thumbnail, appIcon }]
+  // Returns { audioRequested, sources: [{ id, name, type, thumbnail, appIcon }] }
   list: () => ipcRenderer.invoke('picker:list'),
-  choose: (id) => ipcRenderer.send('picker:choose', id),
+  choose: (id, audio) => ipcRenderer.send('picker:choose', { id, audio }),
   cancel: () => ipcRenderer.send('picker:cancel'),
 });

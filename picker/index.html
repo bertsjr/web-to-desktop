@@ -52,9 +52,14 @@
     }
     .empty { color: var(--muted); padding: 40px; text-align: center; grid-column: 1 / -1; }
     footer {
-      display: flex; justify-content: flex-end; gap: 10px;
+      display: flex; align-items: center; gap: 10px;
       padding: 12px 18px; border-top: 1px solid var(--border); background: var(--bar);
     }
+    .audio {
+      display: flex; align-items: center; gap: 7px; margin-right: auto;
+      color: var(--text); font-size: 12.5px; cursor: pointer;
+    }
+    .audio input { width: 15px; height: 15px; accent-color: var(--accent); cursor: pointer; }
     button.action {
       padding: 8px 18px; border-radius: 6px; font-size: 13px;
       cursor: pointer; border: 1px solid var(--border);
@@ -75,6 +80,10 @@
   </div>
   <div class="grid" id="grid"></div>
   <footer>
+    <label class="audio">
+      <input type="checkbox" id="audio" />
+      Share system audio
+    </label>
     <button class="action cancel" id="cancel">Cancel</button>
     <button class="action share" id="share" disabled>Share</button>
   </footer>
