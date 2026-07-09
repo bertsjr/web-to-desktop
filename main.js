@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, shell, nativeImage, session, Tray, Menu, net } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, nativeImage, session, Tray, Menu, net, desktopCapturer } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
@@ -195,6 +195,29 @@ function setupSession(appId, tab) {
   };
   ses.setPermissionRequestHandler((_wc, permission, cb) => cb(allow(permission)));
   ses.setPermissionCheckHandler((_wc, permission) => allow(permission));
+
+  // Screen/window sharing (Teams "Share screen", Meet, etc.) goes through
+  // getDisplayMedia(), which Electron routes here — NOT through the media
+  // permission handler above. Without this handler the capture request is
+  // rejected, which surfaces in Teams as "issue with content sharing" plus a
+  // misleading "couldn't access your camera" toast. useSystemPicker lets the OS
+  // (Windows 11) present its native screen/window picker; the callback is the
+  // fallback for platforms without a native picker.
+  ses.setDisplayMediaRequestHandler((_request, callback) => {
+    desktopCapturer.getSources({ types: ['screen', 'window'] }).then((sources) => {
+      devLog('[display-media] sources', { count: sources.length });
+      const primary = sources.find((s) => s.id.startsWith('screen:')) || sources[0];
+      if (primary) {
+        callback({ video: primary });
+      } else {
+        devLog('[display-media] no capturable sources');
+        callback(); // deny — no sources available
+      }
+    }).catch((err) => {
+      devLog('[display-media] getSources failed', { error: String(err) });
+      callback();
+    });
+  }, { useSystemPicker: true });
 
   // Downloads — save to Downloads folder and open in the associated desktop app.
   ses.on('will-download', (_e, item) => {
