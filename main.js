@@ -181,6 +181,82 @@ function partitionFor(tab) {
 }
 
 // ---------------------------------------------------------------------------
+// Screen-share source picker (getDisplayMedia → "Choose what to share")
+// ---------------------------------------------------------------------------
+// Only one picker is live at a time. Holds the capturable sources plus the
+// getDisplayMedia callback so the picker window's IPC can resolve the request.
+let activePicker = null;
+
+async function openSourcePicker(parentWin, callback) {
+  // Resolve any in-flight picker as a cancel before opening a new one.
+  if (activePicker) activePicker.finish(null);
+
+  let sources;
+  try {
+    sources = await desktopCapturer.getSources({
+      types: ['screen', 'window'],
+      thumbnailSize: { width: 320, height: 200 },
+      fetchWindowIcons: true,
+    });
+  } catch (err) {
+    devLog('[display-media] getSources failed', { error: String(err) });
+    callback(); // deny
+    return;
+  }
+  if (!sources.length) {
+    devLog('[display-media] no capturable sources');
+    callback();
+    return;
+  }
+  devLog('[display-media] sources', { count: sources.length });
+
+  const win = new BrowserWindow({
+    width: 780, height: 580,
+    parent: parentWin || undefined, modal: !!parentWin,
+    title: 'Choose what to share', backgroundColor: '#1b1f2a',
+    autoHideMenuBar: true, minimizable: false, maximizable: false,
+    icon: APP_ICON,
+    webPreferences: {
+      preload: path.join(__dirname, 'picker', 'preload.js'),
+      contextIsolation: true, nodeIntegration: false,
+    },
+  });
+  win.removeMenu();
+
+  let settled = false;
+  const finish = (source) => {
+    if (settled) return;
+    settled = true;
+    activePicker = null;
+    try { callback(source ? { video: source } : undefined); }
+    catch (err) { devLog('[display-media] callback failed', { error: String(err) }); }
+    if (!win.isDestroyed()) win.close();
+  };
+
+  activePicker = { sources, finish };
+  // Closing the window (X, Esc, cancel) with nothing chosen == deny the request.
+  win.on('closed', () => finish(null));
+  win.loadFile(path.join(__dirname, 'picker', 'index.html'));
+}
+
+ipcMain.handle('picker:list', () => {
+  if (!activePicker) return [];
+  return activePicker.sources.map((s) => ({
+    id: s.id,
+    name: s.name,
+    type: s.id.startsWith('screen:') ? 'screen' : 'window',
+    thumbnail: s.thumbnail.toDataURL(),
+    appIcon: s.appIcon && !s.appIcon.isEmpty() ? s.appIcon.toDataURL() : null,
+  }));
+});
+ipcMain.on('picker:choose', (_e, id) => {
+  if (!activePicker) return;
+  const source = activePicker.sources.find((s) => s.id === id) || null;
+  activePicker.finish(source);
+});
+ipcMain.on('picker:cancel', () => { if (activePicker) activePicker.finish(null); });
+
+// ---------------------------------------------------------------------------
 // Per-tab session: user-agent + notification permission gating
 // ---------------------------------------------------------------------------
 function setupSession(appId, tab) {
@@ -200,24 +276,12 @@ function setupSession(appId, tab) {
   // getDisplayMedia(), which Electron routes here — NOT through the media
   // permission handler above. Without this handler the capture request is
   // rejected, which surfaces in Teams as "issue with content sharing" plus a
-  // misleading "couldn't access your camera" toast. useSystemPicker lets the OS
-  // (Windows 11) present its native screen/window picker; the callback is the
-  // fallback for platforms without a native picker.
+  // misleading "couldn't access your camera" toast. We show our own picker so
+  // the user can choose which screen or window to share (Electron's
+  // useSystemPicker is not honored on Windows for this Electron version).
   ses.setDisplayMediaRequestHandler((_request, callback) => {
-    desktopCapturer.getSources({ types: ['screen', 'window'] }).then((sources) => {
-      devLog('[display-media] sources', { count: sources.length });
-      const primary = sources.find((s) => s.id.startsWith('screen:')) || sources[0];
-      if (primary) {
-        callback({ video: primary });
-      } else {
-        devLog('[display-media] no capturable sources');
-        callback(); // deny — no sources available
-      }
-    }).catch((err) => {
-      devLog('[display-media] getSources failed', { error: String(err) });
-      callback();
-    });
-  }, { useSystemPicker: true });
+    openSourcePicker(BrowserWindow.getFocusedWindow(), callback);
+  });
 
   // Downloads — save to Downloads folder and open in the associated desktop app.
   ses.on('will-download', (_e, item) => {

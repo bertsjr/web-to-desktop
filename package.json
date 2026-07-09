@@ -18,6 +18,7 @@
       "preload.js",
       "renderer/**/*",
       "appshell/**/*",
+      "picker/**/*",
       "assets/**/*"
     ],
     "publish": [
