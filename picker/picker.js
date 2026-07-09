@@ -9,6 +9,7 @@ const tabs = [...document.querySelectorAll('.tab')];
 let sources = [];
 let activeType = 'screen';
 let selectedId = null;
+let preferredSourceId = null; // last-used source, restored if still available
 
 function render() {
   selectedId = null;
@@ -51,6 +52,12 @@ function render() {
     card.addEventListener('dblclick', () => { select(s.id, card); confirm(); });
     grid.appendChild(card);
   }
+
+  // Restore the previously shared source if it's still in this list.
+  if (preferredSourceId) {
+    const prev = grid.querySelector(`.src[data-id="${CSS.escape(preferredSourceId)}"]`);
+    if (prev) select(preferredSourceId, prev);
+  }
 }
 
 function select(id, card) {
@@ -74,14 +81,16 @@ shareBtn.addEventListener('click', confirm);
 cancelBtn.addEventListener('click', () => window.picker.cancel());
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') window.picker.cancel(); });
 
-window.picker.list().then(({ sources: list, audioRequested }) => {
+window.picker.list().then(({ sources: list, audioRequested, prefs }) => {
   sources = list;
-  // Pre-check "Share system audio" when the app actually asked for audio.
-  audioBox.checked = !!audioRequested;
-  // Default to whichever tab actually has sources.
-  if (!sources.some((s) => s.type === 'screen') && sources.some((s) => s.type === 'window')) {
-    activeType = 'window';
-    tabs.forEach((t) => t.classList.toggle('active', t.dataset.type === 'window'));
-  }
+  prefs = prefs || {};
+  preferredSourceId = prefs.sourceId || null;
+  // Remember the last "share system audio" state; fall back to what the app asked for.
+  audioBox.checked = typeof prefs.audio === 'boolean' ? prefs.audio : !!audioRequested;
+  // Restore the last screen/window tab if it has sources, else pick one that does.
+  const hasType = (t) => sources.some((s) => s.type === t);
+  activeType = prefs.type && hasType(prefs.type) ? prefs.type
+    : hasType('screen') ? 'screen' : 'window';
+  tabs.forEach((t) => t.classList.toggle('active', t.dataset.type === activeType));
   render();
 });

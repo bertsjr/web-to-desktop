@@ -4,6 +4,13 @@ const fs = require('fs');
 const crypto = require('crypto');
 const log = require('electron-log');
 
+// Window/tab capture via the Windows Graphics Capture (WGC) API fails on some
+// systems: "wgc_capture_session ProcessFrame failed -2147467259" (E_FAIL),
+// which Teams reports as "your video isn't working". Disabling the WGC window
+// capturer falls back to the legacy capturer, which is reliable here. Screen
+// (whole-display) capture is unaffected. Must be set before app is ready.
+app.commandLine.appendSwitch('disable-features', 'AllowWgcWindowCapturer');
+
 // ---------------------------------------------------------------------------
 // Logging — written to <userData>/logs/main.log (always writable on Windows).
 // ---------------------------------------------------------------------------
@@ -187,6 +194,18 @@ function partitionFor(tab) {
 // getDisplayMedia callback so the picker window's IPC can resolve the request.
 let activePicker = null;
 
+// Remembers the last share choice: system-audio toggle, screen/window tab, and
+// the last source id (restored only if that source still exists).
+const SHARE_PREFS_PATH = path.join(app.getPath('userData'), 'share-prefs.json');
+function loadSharePrefs() {
+  try { return JSON.parse(fs.readFileSync(SHARE_PREFS_PATH, 'utf8')); }
+  catch { return { audio: false, type: 'screen', sourceId: null }; }
+}
+function saveSharePrefs(prefs) {
+  try { fs.writeFileSync(SHARE_PREFS_PATH, JSON.stringify(prefs), 'utf8'); }
+  catch (err) { devLog('[display-media] saveSharePrefs failed', { error: String(err) }); }
+}
+
 async function openSourcePicker(parentWin, callback, audioRequested) {
   // Resolve any in-flight picker as a cancel before opening a new one.
   if (activePicker) activePicker.finish(null);
@@ -237,16 +256,17 @@ async function openSourcePicker(parentWin, callback, audioRequested) {
     if (!win.isDestroyed()) win.close();
   };
 
-  activePicker = { sources, audioRequested: !!audioRequested, finish };
+  activePicker = { sources, audioRequested: !!audioRequested, prefs: loadSharePrefs(), finish };
   // Closing the window (X, Esc, cancel) with nothing chosen == deny the request.
   win.on('closed', () => finish(null));
   win.loadFile(path.join(__dirname, 'picker', 'index.html'));
 }
 
 ipcMain.handle('picker:list', () => {
-  if (!activePicker) return { sources: [], audioRequested: false };
+  if (!activePicker) return { sources: [], audioRequested: false, prefs: loadSharePrefs() };
   return {
     audioRequested: activePicker.audioRequested,
+    prefs: activePicker.prefs,
     sources: activePicker.sources.map((s) => ({
       id: s.id,
       name: s.name,
@@ -259,6 +279,13 @@ ipcMain.handle('picker:list', () => {
 ipcMain.on('picker:choose', (_e, { id, audio }) => {
   if (!activePicker) return;
   const source = activePicker.sources.find((s) => s.id === id) || null;
+  if (source) {
+    saveSharePrefs({
+      audio: !!audio,
+      type: source.id.startsWith('screen:') ? 'screen' : 'window',
+      sourceId: source.id,
+    });
+  }
   activePicker.finish(source, !!audio);
 });
 ipcMain.on('picker:cancel', () => { if (activePicker) activePicker.finish(null); });
