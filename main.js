@@ -4,13 +4,6 @@ const fs = require('fs');
 const crypto = require('crypto');
 const log = require('electron-log');
 
-// Window/tab capture via the Windows Graphics Capture (WGC) API fails on some
-// systems: "wgc_capture_session ProcessFrame failed -2147467259" (E_FAIL),
-// which Teams reports as "your video isn't working". Disabling the WGC window
-// capturer falls back to the legacy capturer, which is reliable here. Screen
-// (whole-display) capture is unaffected. Must be set before app is ready.
-app.commandLine.appendSwitch('disable-features', 'AllowWgcWindowCapturer');
-
 // ---------------------------------------------------------------------------
 // Logging — written to <userData>/logs/main.log (always writable on Windows).
 // ---------------------------------------------------------------------------
@@ -251,7 +244,13 @@ async function openSourcePicker(parentWin, callback, audioRequested) {
     settled = true;
     activePicker = null;
     try {
-      callback(source ? { video: source, audio: withAudio ? 'loopback' : undefined } : undefined);
+      if (!source) {
+        callback(); // cancelled / no source → deny
+      } else {
+        const response = { video: source };
+        if (withAudio) response.audio = 'loopback'; // Windows system audio
+        callback(response);
+      }
     } catch (err) { devLog('[display-media] callback failed', { error: String(err) }); }
     if (!win.isDestroyed()) win.close();
   };
