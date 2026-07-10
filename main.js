@@ -222,9 +222,12 @@ async function openSourcePicker(parentWin, callback, audioRequested) {
   }
   devLog('[display-media] sources', { count: sources.length });
 
+  // parentWin may have been closed during the await above; a destroyed window
+  // passed as `parent` throws, so fall back to a top-level (non-modal) picker.
+  const parent = parentWin && !parentWin.isDestroyed() ? parentWin : undefined;
   const win = new BrowserWindow({
     width: 780, height: 580,
-    parent: parentWin || undefined, modal: !!parentWin,
+    parent, modal: !!parent,
     title: 'Choose what to share', backgroundColor: '#1b1f2a',
     autoHideMenuBar: true, minimizable: false, maximizable: false,
     icon: APP_ICON,
