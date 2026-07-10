@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, shell, nativeImage, session, Tray, Menu, net } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, nativeImage, session, Tray, Menu, net, desktopCapturer } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
@@ -181,6 +181,118 @@ function partitionFor(tab) {
 }
 
 // ---------------------------------------------------------------------------
+// Screen-share source picker (getDisplayMedia → "Choose what to share")
+// ---------------------------------------------------------------------------
+// Only one picker is live at a time. Holds the capturable sources plus the
+// getDisplayMedia callback so the picker window's IPC can resolve the request.
+let activePicker = null;
+
+// Remembers the last share choice: system-audio toggle, screen/window tab, and
+// the last source id (restored only if that source still exists).
+const SHARE_PREFS_PATH = path.join(app.getPath('userData'), 'share-prefs.json');
+function loadSharePrefs() {
+  try { return JSON.parse(fs.readFileSync(SHARE_PREFS_PATH, 'utf8')); }
+  catch { return { audio: false, type: 'screen', sourceId: null }; }
+}
+function saveSharePrefs(prefs) {
+  try { fs.writeFileSync(SHARE_PREFS_PATH, JSON.stringify(prefs), 'utf8'); }
+  catch (err) { devLog('[display-media] saveSharePrefs failed', { error: String(err) }); }
+}
+
+async function openSourcePicker(parentWin, callback, audioRequested) {
+  // Resolve any in-flight picker as a cancel before opening a new one.
+  if (activePicker) activePicker.finish(null);
+
+  let sources;
+  try {
+    sources = await desktopCapturer.getSources({
+      types: ['screen', 'window'],
+      thumbnailSize: { width: 320, height: 200 },
+      fetchWindowIcons: true,
+    });
+  } catch (err) {
+    devLog('[display-media] getSources failed', { error: String(err) });
+    callback(); // deny
+    return;
+  }
+  if (!sources.length) {
+    devLog('[display-media] no capturable sources');
+    callback();
+    return;
+  }
+  devLog('[display-media] sources', { count: sources.length });
+
+  // parentWin may have been closed during the await above; a destroyed window
+  // passed as `parent` throws, so fall back to a top-level (non-modal) picker.
+  const parent = parentWin && !parentWin.isDestroyed() ? parentWin : undefined;
+  const win = new BrowserWindow({
+    width: 780, height: 580,
+    parent, modal: !!parent,
+    title: 'Choose what to share', backgroundColor: '#1b1f2a',
+    autoHideMenuBar: true, minimizable: false, maximizable: false,
+    icon: APP_ICON,
+    webPreferences: {
+      preload: path.join(__dirname, 'picker', 'preload.js'),
+      contextIsolation: true, nodeIntegration: false,
+    },
+  });
+  win.removeMenu();
+
+  let settled = false;
+  // Windows can capture system audio via the 'loopback' audio source. We only
+  // request it when the user opts in (checkbox), since loopback grabs ALL
+  // system audio, not just the shared window.
+  const finish = (source, withAudio) => {
+    if (settled) return;
+    settled = true;
+    activePicker = null;
+    try {
+      if (!source) {
+        callback(); // cancelled / no source → deny
+      } else {
+        const response = { video: source };
+        if (withAudio) response.audio = 'loopback'; // Windows system audio
+        callback(response);
+      }
+    } catch (err) { devLog('[display-media] callback failed', { error: String(err) }); }
+    if (!win.isDestroyed()) win.close();
+  };
+
+  activePicker = { sources, audioRequested: !!audioRequested, prefs: loadSharePrefs(), finish };
+  // Closing the window (X, Esc, cancel) with nothing chosen == deny the request.
+  win.on('closed', () => finish(null));
+  win.loadFile(path.join(__dirname, 'picker', 'index.html'));
+}
+
+ipcMain.handle('picker:list', () => {
+  if (!activePicker) return { sources: [], audioRequested: false, prefs: loadSharePrefs() };
+  return {
+    audioRequested: activePicker.audioRequested,
+    prefs: activePicker.prefs,
+    sources: activePicker.sources.map((s) => ({
+      id: s.id,
+      name: s.name,
+      type: s.id.startsWith('screen:') ? 'screen' : 'window',
+      thumbnail: s.thumbnail.toDataURL(),
+      appIcon: s.appIcon && !s.appIcon.isEmpty() ? s.appIcon.toDataURL() : null,
+    })),
+  };
+});
+ipcMain.on('picker:choose', (_e, { id, audio }) => {
+  if (!activePicker) return;
+  const source = activePicker.sources.find((s) => s.id === id) || null;
+  if (source) {
+    saveSharePrefs({
+      audio: !!audio,
+      type: source.id.startsWith('screen:') ? 'screen' : 'window',
+      sourceId: source.id,
+    });
+  }
+  activePicker.finish(source, !!audio);
+});
+ipcMain.on('picker:cancel', () => { if (activePicker) activePicker.finish(null); });
+
+// ---------------------------------------------------------------------------
 // Per-tab session: user-agent + notification permission gating
 // ---------------------------------------------------------------------------
 function setupSession(appId, tab) {
@@ -195,6 +307,17 @@ function setupSession(appId, tab) {
   };
   ses.setPermissionRequestHandler((_wc, permission, cb) => cb(allow(permission)));
   ses.setPermissionCheckHandler((_wc, permission) => allow(permission));
+
+  // Screen/window sharing (Teams "Share screen", Meet, etc.) goes through
+  // getDisplayMedia(), which Electron routes here — NOT through the media
+  // permission handler above. Without this handler the capture request is
+  // rejected, which surfaces in Teams as "issue with content sharing" plus a
+  // misleading "couldn't access your camera" toast. We show our own picker so
+  // the user can choose which screen or window to share (Electron's
+  // useSystemPicker is not honored on Windows for this Electron version).
+  ses.setDisplayMediaRequestHandler((request, callback) => {
+    openSourcePicker(BrowserWindow.getFocusedWindow(), callback, !!request.audioRequested);
+  });
 
   // Downloads — save to Downloads folder and open in the associated desktop app.
   ses.on('will-download', (_e, item) => {
