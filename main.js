@@ -345,6 +345,42 @@ function setupSession(appId, tab) {
   });
 }
 
+// Identity-provider hosts used for OAuth / SSO sign-in. Navigations and popups
+// to these must stay INSIDE the app — they share the tab's session cookies, so
+// shunting them to the external browser (which has no session) breaks login.
+// Matches the host exactly or any subdomain of it.
+const AUTH_HOSTS = [
+  // Microsoft (Outlook, Office 365, Teams, Azure AD / Entra)
+  'login.microsoftonline.com',
+  'login.microsoftonline.us',
+  'login.microsoft.com',
+  'login.live.com',
+  'login.windows.net',
+  'account.live.com',
+  'account.microsoft.com',
+  'msauth.net',
+  'msftauth.net',
+  'microsoftonline.com',
+  // Google
+  'accounts.google.com',
+  'accounts.youtube.com',
+  // Common third-party identity providers
+  'okta.com',
+  'auth0.com',
+  'onelogin.com',
+  'pingidentity.com',
+  'duosecurity.com',
+];
+
+function isAuthUrl(url) {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return AUTH_HOSTS.some((h) => host === h || host.endsWith('.' + h));
+  } catch {
+    return false;
+  }
+}
+
 // External links open in the real browser / associated desktop app.
 app.on('web-contents-created', (_e, contents) => {
   devLog('[web-contents-created] type:', contents.getType(), 'id:', contents.id);
@@ -357,6 +393,12 @@ app.on('web-contents-created', (_e, contents) => {
     if (url === 'about:blank' && contents.getType() === 'webview') {
       return { action: 'allow', overrideBrowserWindowOptions: { show: false } };
     }
+    // OAuth / SSO popups (e.g. Microsoft login) must stay in-app so they share
+    // the tab's session and can postMessage the result back to the opener.
+    if (isAuthUrl(url)) {
+      devLog('[setWindowOpenHandler] → allowing auth popup in-app', url);
+      return { action: 'allow' };
+    }
     if (url && url !== 'about:blank') {
       shell.openExternal(url);
     }
@@ -368,8 +410,19 @@ app.on('web-contents-created', (_e, contents) => {
   contents.on('did-create-window', (popup) => {
     devLog('[did-create-window] popup from', contents.getType());
     const pc = popup.webContents;
+    // If this is an auth popup, let it run its full sign-in flow untouched.
+    if (isAuthUrl(pc.getURL())) {
+      devLog('[did-create-window] auth popup — leaving open for sign-in');
+      return;
+    }
     pc.on('will-navigate', (e, url) => {
       devLog('[popup will-navigate]', url);
+      // A popup that starts on about:blank may navigate into an auth flow —
+      // keep those in-app too.
+      if (isAuthUrl(url)) {
+        devLog('[popup will-navigate] → auth URL, keeping in-app', url);
+        return;
+      }
       e.preventDefault();
       shell.openExternal(url);
       popup.close();
@@ -377,7 +430,7 @@ app.on('web-contents-created', (_e, contents) => {
     // Give the popup time for JS to run (e.g. Outlook sets window.location
     // after about:blank loads). Clean up after 30s if nothing happened.
     setTimeout(() => {
-      if (!popup.isDestroyed()) {
+      if (!popup.isDestroyed() && !isAuthUrl(popup.webContents.getURL())) {
         devLog('[popup] closing idle popup after timeout');
         popup.close();
       }
@@ -404,6 +457,14 @@ app.on('web-contents-created', (_e, contents) => {
       // (preserving auth cookies). Otherwise open in default browser.
       const curr = contents.getURL();
       if (curr && new URL(curr).origin !== dest.origin) {
+        // OAuth / SSO redirect — keep it in the webview so the sign-in shares
+        // the tab's session. Covers both directions: app → auth provider
+        // (e.g. Outlook → login.microsoftonline.com) and the return redirect
+        // auth provider → app (e.g. login.microsoftonline.com → Outlook).
+        if (isAuthUrl(url) || isAuthUrl(curr)) {
+          devLog('[will-navigate] → allowing auth navigation in-app', url);
+          return;
+        }
         const downloadExts = /\.(docx?|xlsx?|pptx?|pdf|zip|rar|7z|gz|tar|csv|txt|exe|msi|dmg|pkg|ics|eml|msg|odt|ods|odp|rtf|mp3|mp4|wav|avi|mov|png|jpe?g|gif|svg|bmp|webp)(\?.*)?$/i;
         if (downloadExts.test(dest.pathname)) {
           devLog('[will-navigate] → allowing download URL (cross-origin)', url);
