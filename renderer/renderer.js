@@ -125,12 +125,14 @@ function addTabRow(tab = {}) {
     <div class="tab-row-opts">
       <label class="check"><input type="checkbox" class="t-notif" /> Notifications</label>
       <label class="check"><input type="checkbox" class="t-persist" /> Keep cookies &amp; logins</label>
+      <label class="check"><input type="checkbox" class="t-media" /> Media controls</label>
     </div>
   `;
   row.querySelector('.t-name').value = tab.name || '';
   row.querySelector('.t-url').value = tab.url || '';
   row.querySelector('.t-notif').checked = s.notifications !== false;
   row.querySelector('.t-persist').checked = s.persistSession !== false;
+  row.querySelector('.t-media').checked = !!s.mediaControls;
   row.querySelector('.t-del').addEventListener('click', () => {
     if (tabRows.children.length > 1) row.remove();
   });
@@ -144,6 +146,7 @@ function readTabs() {
     settings: {
       notifications: row.querySelector('.t-notif').checked,
       persistSession: row.querySelector('.t-persist').checked,
+      mediaControls: row.querySelector('.t-media').checked,
     },
   })).filter((t) => t.url);
 }

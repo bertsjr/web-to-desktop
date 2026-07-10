@@ -27,6 +27,8 @@ const state = {
   webviews: new Map(),      // tabId -> <webview>
   hosts: new Map(),         // tabId -> pane wrapper element
   detached: new Set(),      // tabs detached into their own window
+  mediaTabId: null,         // tab whose player drives the taskbar / media keys
+  mediaPreloadPath: '',     // file:// URL of the media webview preload (from main)
   dragId: null,
   appIcon: '',              // configured icon (emoji/letter or image URL)
   iconSet: false,           // a favicon was already used as the window icon
@@ -39,6 +41,7 @@ const state = {
   state.appName = data.name;
   state.appSettings = data.settings;
   state.appIcon = data.icon || '';
+  state.mediaPreloadPath = data.mediaPreloadPath || '';
   state.tabs = DETACHED ? data.tabs.filter((t) => t.id === SOLO_ID) : data.tabs;
   document.title = DETACHED ? (state.tabs[0]?.name || data.name) : data.name;
 
@@ -48,6 +51,14 @@ const state = {
   if (state.tabs[0]) { state.expanded = state.tabs[0].id; state.activeId = state.tabs[0].id; }
   applyLayout();
   resolveIcon();
+
+  // Route taskbar/media-key commands to the active media tab's player.
+  api.onMediaCommand((cmd) => {
+    const wv = state.webviews.get(state.mediaTabId)
+      || [...state.webviews.keys()].map((id) => state.webviews.get(id))
+        .find((v) => v && v.getAttribute('preload'));
+    try { if (wv) wv.send('media:command', cmd); } catch {}
+  });
 
   // Re-flow whenever the window/view area resizes.
   new ResizeObserver(() => applyLayout()).observe(views);
@@ -84,6 +95,17 @@ function buildTab(tab, insertIndex = null) {
   const wv = document.createElement('webview');
   wv.setAttribute('partition', tab._partition);
   wv.setAttribute('allowpopups', '');
+  // Media tabs (explicit setting or a known music site) get the media preload
+  // so the taskbar thumbbar + media keys can drive playback. Set before src.
+  if (isMediaTab(tab) && state.mediaPreloadPath) {
+    wv.setAttribute('preload', state.mediaPreloadPath);
+    wv.addEventListener('ipc-message', (e) => {
+      if (e.channel !== 'media:state') return;
+      const s = e.args[0];
+      if (s && s.enabled) state.mediaTabId = tab.id;
+      api.mediaState(s);
+    });
+  }
   wv.setAttribute('src', tab.url || 'about:blank');
   wv.dataset.tabId = tab.id;
   wv.addEventListener('page-title-updated', (e) => onTitle(tab.id, e.title));
@@ -174,6 +196,12 @@ function glyphToDataUrl(text) {
   x.font = `${emoji ? '' : 'bold '}${emoji ? 40 : 36}px "Segoe UI Emoji","Segoe UI",system-ui,sans-serif`;
   x.fillText(ch, S / 2, S / 2 + 2);
   try { return c.toDataURL('image/png'); } catch { return null; }
+}
+
+// A tab is media-capable if explicitly enabled or it's a known music site.
+function isMediaTab(tab) {
+  if (tab.settings && tab.settings.mediaControls) return true;
+  return /(^|\/\/|\.)music\.youtube\.com(\/|$)/i.test(tab.url || '');
 }
 
 function getTab(id) { return state.tabs.find((t) => t.id === id); }
@@ -512,6 +540,7 @@ function parseUnread(title) {
 const settings = document.getElementById('settings');
 const sNotifications = document.getElementById('sNotifications');
 const sPersist = document.getElementById('sPersist');
+const sMedia = document.getElementById('sMedia');
 const sTray = document.getElementById('sTray');
 const sStartup = document.getElementById('sStartup');
 let drawerTabId = null;
@@ -524,6 +553,7 @@ function openSettings(id) {
   if (tab) {
     sNotifications.checked = tab.settings.notifications !== false;
     sPersist.checked = tab.settings.persistSession !== false;
+    sMedia.checked = !!tab.settings.mediaControls;
   }
   sTray.checked = !!state.appSettings.minimizeToTray;
   sStartup.checked = !!state.appSettings.launchOnStartup;
@@ -540,6 +570,10 @@ sNotifications.addEventListener('change', () => {
 sPersist.addEventListener('change', () => {
   const t = getTab(drawerTabId); if (t) t.settings.persistSession = sPersist.checked;
   api.setTabSettings(APP_ID, drawerTabId, { persistSession: sPersist.checked });
+});
+sMedia.addEventListener('change', () => {
+  const t = getTab(drawerTabId); if (t) t.settings.mediaControls = sMedia.checked;
+  api.setTabSettings(APP_ID, drawerTabId, { mediaControls: sMedia.checked });
 });
 sTray.addEventListener('change', () => {
   state.appSettings.minimizeToTray = sTray.checked;

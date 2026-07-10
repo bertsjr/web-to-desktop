@@ -1,8 +1,9 @@
-const { app, BrowserWindow, ipcMain, shell, nativeImage, session, Tray, Menu, net, desktopCapturer } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, nativeImage, session, Tray, Menu, net, desktopCapturer, globalShortcut, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 const log = require('electron-log');
+const { loginViaSystemBrowser } = require('./google-auth-browser');
 
 // ---------------------------------------------------------------------------
 // Logging — written to <userData>/logs/main.log (always writable on Windows).
@@ -70,9 +71,19 @@ const APP_ICON = nativeImage.createFromPath(path.join(__dirname, 'assets', 'icon
 // Per-app icons (set at runtime from each app's configured icon or favicon).
 const appIcons = new Map(); // appId -> nativeImage
 
+// Present a clean, CONSISTENT desktop-Chrome identity. Electron's default UA
+// string carries an "Electron/<ver>" token (plus the app name) that browsers
+// like Google flag as an embedded framework — so we override just the UA string
+// to a plain Chrome matching our actual engine version. Everything else
+// (Sec-CH-UA client hints, navigator.userAgentData) is left as Chromium reports
+// it natively, which is already a consistent "Chromium 126" with no Electron
+// brand. The engine here is Chromium 126 (Electron 31); the UA MUST stay in sync
+// with that major version — a mismatch (e.g. claiming Chrome 137 on a 126
+// engine) is exactly the inconsistency Google's "this browser may not be secure"
+// check keys on.
 const DESKTOP_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
-  '(KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36 Edg/137.0.0.0';
+  '(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
 app.userAgentFallback = DESKTOP_UA;
 
 // Download an image URL (no CORS limits in main) into a nativeImage.
@@ -115,7 +126,7 @@ function applyAppIcon(appId, img) {
 // ---------------------------------------------------------------------------
 const STORE_PATH = path.join(app.getPath('userData'), 'apps.json');
 const DEFAULT_APP_SETTINGS = { minimizeToTray: false, launchOnStartup: false };
-const DEFAULT_TAB_SETTINGS = { notifications: true, persistSession: true };
+const DEFAULT_TAB_SETTINGS = { notifications: true, persistSession: true, mediaControls: false };
 
 function normalizeUrl(url) {
   if (!url) return url;
@@ -293,11 +304,13 @@ ipcMain.on('picker:choose', (_e, { id, audio }) => {
 ipcMain.on('picker:cancel', () => { if (activePicker) activePicker.finish(null); });
 
 // ---------------------------------------------------------------------------
-// Per-tab session: user-agent + notification permission gating
+// Per-tab session: notification permission gating
 // ---------------------------------------------------------------------------
+// The desktop-Chrome UA is applied globally via app.userAgentFallback (see top
+// of file); Sec-CH-UA client hints and navigator.userAgentData are left as
+// Chromium reports them natively — a consistent "Chromium 126" identity.
 function setupSession(appId, tab) {
   const ses = session.fromPartition(partitionFor(tab));
-  ses.setUserAgent(DESKTOP_UA);
   const allow = (permission) => {
     if (permission === 'notifications') {
       const t = getTab(appId, tab.id);
@@ -381,6 +394,99 @@ function isAuthUrl(url) {
   }
 }
 
+// Google specifically blocks sign-in from embedded browser frameworks — an
+// Electron <webview> guest counts as one, so its login page is rejected with
+// "This browser or app may not be secure." Microsoft/Okta/etc. do NOT do this
+// and sign in fine inside the webview, so this is scoped to Google alone.
+const GOOGLE_AUTH_HOSTS = ['accounts.google.com', 'accounts.youtube.com'];
+function isGoogleAuthUrl(url) {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return GOOGLE_AUTH_HOSTS.some((h) => host === h || host.endsWith('.' + h));
+  } catch {
+    return false;
+  }
+}
+
+// YouTube Music's own sign-in link carries params that flag the login as an
+// embedded/restricted context — `uilel` (UI login element level, =3 for
+// webview-style) and `ltmpl=music` (the embedded "music" template). Google
+// marks the whole flow embedded from the identifier step and enforces the
+// "browser may not be secure" block after the email is submitted, even in a
+// real top-level window. Strip those flags so our trusted window runs a normal
+// browser sign-in; keep `continue` so the youtube.com handshake still sets the
+// session cookies YTMusic needs.
+function cleanGoogleAuthUrl(rawUrl) {
+  try {
+    const u = new URL(rawUrl);
+    u.searchParams.delete('uilel');
+    u.searchParams.delete('ltmpl');
+    return u.toString();
+  } catch { return rawUrl; }
+}
+
+// A small always-on-top hint shown while the external browser login happens.
+function showAuthHint(guestContents) {
+  let parent;
+  try { parent = BrowserWindow.fromWebContents(guestContents.hostWebContents); } catch {}
+  const win = new BrowserWindow({
+    width: 400, height: 190, parent: parent || undefined, resizable: false,
+    minimizable: false, maximizable: false, title: 'Signing in…',
+    autoHideMenuBar: true, alwaysOnTop: true,
+  });
+  win.removeMenu();
+  const html = '<!doctype html><meta charset="utf-8"><body style="font-family:Segoe UI,system-ui,sans-serif;'
+    + 'margin:0;padding:22px;background:#1f1f1f;color:#eee">'
+    + '<h3 style="margin:0 0 10px;font-size:16px">Finish signing in</h3>'
+    + '<p style="margin:0;line-height:1.5;font-size:13px">A Chrome window has opened. Complete your '
+    + 'Google sign-in there.<br><br>This closes automatically and the app refreshes signed in.</p></body>';
+  win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
+  return win;
+}
+
+// Google blocks sign-in from the Electron runtime, so we run the login in the
+// user's real Chrome/Edge and import the resulting session cookies into this
+// tab's session (see google-auth-browser.js). Then reload the webview signed in.
+let googleAuthInProgress = false;
+async function startGoogleAuthViaBrowser(authUrl, guestContents) {
+  if (googleAuthInProgress) { devLog('[sysauth] already in progress, ignoring'); return; }
+  googleAuthInProgress = true;
+  const cleanUrl = cleanGoogleAuthUrl(authUrl);
+  devLog('[sysauth] starting Google login via system browser', cleanUrl);
+  const hint = showAuthHint(guestContents);
+  try {
+    const res = await loginViaSystemBrowser({
+      loginUrl: cleanUrl,
+      targetSession: guestContents.session,
+      isSignedInUrl: (u) => {
+        try {
+          const parsed = new URL(u);
+          return /(^|\.)youtube\.com$/i.test(parsed.hostname) && !/\/signin/i.test(parsed.pathname);
+        } catch { return false; }
+      },
+      log: (...a) => devLog(...a),
+    });
+    devLog('[sysauth] result', res);
+    try { if (!hint.isDestroyed()) hint.close(); } catch {}
+    if (res.ok) {
+      try { if (!guestContents.isDestroyed()) guestContents.reload(); } catch {}
+    } else {
+      const msg = {
+        'no-browser': 'No Chrome or Edge was found to sign in with.',
+        closed: 'The sign-in window was closed before finishing.',
+        timeout: 'Sign-in timed out. Please try again.',
+      }[res.reason] || ('Sign-in did not complete (' + res.reason + ').');
+      try {
+        const parentWin = BrowserWindow.fromWebContents(guestContents.hostWebContents);
+        dialog.showMessageBox(parentWin || undefined, { type: 'warning', title: 'Sign-in', message: msg });
+      } catch {}
+    }
+  } finally {
+    googleAuthInProgress = false;
+    try { if (!hint.isDestroyed()) hint.close(); } catch {}
+  }
+}
+
 // External links open in the real browser / associated desktop app.
 app.on('web-contents-created', (_e, contents) => {
   devLog('[web-contents-created] type:', contents.getType(), 'id:', contents.id);
@@ -393,8 +499,10 @@ app.on('web-contents-created', (_e, contents) => {
     if (url === 'about:blank' && contents.getType() === 'webview') {
       return { action: 'allow', overrideBrowserWindowOptions: { show: false } };
     }
-    // OAuth / SSO popups (e.g. Microsoft login) must stay in-app so they share
-    // the tab's session and can postMessage the result back to the opener.
+    // OAuth / SSO popups (e.g. Microsoft/Google login) must stay in-app so they
+    // share the tab's session and can postMessage the result back to the opener.
+    // This popup is a real top-level window (not a webview), so it presents the
+    // clean desktop-Chrome UA set globally via app.userAgentFallback.
     if (isAuthUrl(url)) {
       devLog('[setWindowOpenHandler] → allowing auth popup in-app', url);
       return { action: 'allow' };
@@ -443,6 +551,15 @@ app.on('web-contents-created', (_e, contents) => {
     const cType = contents.getType();
     devLog('[will-navigate]', { url, contentType: cType, currentURL: contents.getURL() });
     if (cType !== 'webview') return;
+    // Google sign-in can't run inside the webview (Google blocks embedded
+    // frameworks). Divert the initial hop into Google login to a real top-level
+    // window that shares this tab's session; skip if we're already mid-flow.
+    if (isGoogleAuthUrl(url) && !isGoogleAuthUrl(contents.getURL())) {
+      e.preventDefault();
+      devLog('[will-navigate] → diverting Google auth to system browser', url);
+      startGoogleAuthViaBrowser(url, contents);
+      return;
+    }
     try {
       const dest = new URL(url);
       // Non-http(s) protocols → open with OS handler (Excel, Teams, etc.)
@@ -558,6 +675,27 @@ function loadCachedIcon(appId) {
   } catch {}
 }
 
+// Give each app window its own taskbar identity (AppUserModelID) so separately
+// launched standalone apps don't collapse into a single taskbar group. Windows
+// groups by AUMID; without a per-window id, every window inherits the
+// process-global id (shared across apps under the single-instance lock) and
+// they group together. The id matches the AUMID on the installed shortcut
+// (writeShortcuts), so a running window also associates with its pinned entry.
+function applyWindowAppId(win, appDef) {
+  if (process.platform !== 'win32' || !appDef) return;
+  const relaunchArgs = app.isPackaged
+    ? `--app-id=${appDef.id}`
+    : `"${app.getAppPath()}" --app-id=${appDef.id}`;
+  const details = {
+    appId: `${APP_ID}.${appDef.id}`,
+    relaunchCommand: `"${process.execPath}" ${relaunchArgs}`,
+    relaunchDisplayName: appDef.name,
+  };
+  const ico = iconCachePath(appDef.id);
+  if (fs.existsSync(ico)) { details.appIconPath = ico; details.appIconIndex = 0; }
+  try { win.setAppDetails(details); } catch (e) { log.warn('setAppDetails failed', e); }
+}
+
 function launchApp(appDef) {
   const existing = appWindows.get(appDef.id);
   if (existing && !existing.isDestroyed()) { existing.show(); existing.focus(); return; }
@@ -575,6 +713,7 @@ function launchApp(appDef) {
     },
   });
   win.removeMenu();
+  applyWindowAppId(win, appDef);
   win.loadFile(path.join(__dirname, 'appshell', 'index.html'), { query: { id: appDef.id } });
   win.on('page-title-updated', (e) => { e.preventDefault(); win.setTitle(appDef.name); });
 
@@ -615,6 +754,7 @@ function detachTab(appId, tabId) {
     },
   });
   win.removeMenu();
+  applyWindowAppId(win, getApp(appId));
   win.loadFile(path.join(__dirname, 'appshell', 'index.html'), {
     query: { id: appId, tab: tabId, detached: '1' },
   });
@@ -922,10 +1062,20 @@ ipcMain.handle('app:rollback', async () => {
 // ---------------------------------------------------------------------------
 // IPC — app shell (per-tab + app-level settings, tabs, detach, exit)
 // ---------------------------------------------------------------------------
+// Absolute file:// URL of the media webview preload — computed here in the
+// main process (full Node), since the appshell preload is sandboxed and cannot
+// require('path')/require('url').
+const MEDIA_PRELOAD_URL = require('url')
+  .pathToFileURL(path.join(__dirname, 'appshell', 'media-preload.js')).href;
+
 ipcMain.handle('app:get', (_e, id) => {
   const a = getApp(id);
   if (!a) return null;
-  return { ...a, tabs: a.tabs.map((t) => ({ ...t, _partition: partitionFor(t) })) };
+  return {
+    ...a,
+    mediaPreloadPath: MEDIA_PRELOAD_URL,
+    tabs: a.tabs.map((t) => ({ ...t, _partition: partitionFor(t) })),
+  };
 });
 
 ipcMain.handle('app:setTabSettings', (_e, { appId, tabId, settings }) => {
@@ -999,6 +1149,115 @@ ipcMain.on('shell:unread', (e, { id, count }) => {
     else win.setOverlayIcon(null, '');
   }
   sendUnread(id, count);
+});
+
+// ---------------------------------------------------------------------------
+// Media controls — taskbar thumbnail-toolbar buttons (shown on taskbar hover /
+// when minimized) and global hardware media keys, driving a media tab
+// (e.g. YouTube Music). A media webview reports playback state via the appshell
+// (media:state); we mirror it into the window's thumbbar and route transport
+// commands (media:command) back down. See appshell/media-preload.js.
+// ---------------------------------------------------------------------------
+const mediaIcons = {};                 // { prev, play, pause, next } nativeImages
+const mediaWins = new Set();           // windows currently hosting a media tab
+let activeMediaWin = null;             // most recently active media window
+let mediaKeysRegistered = false;
+
+// White transport glyph on a transparent square → nativeImage (~32px).
+function renderMediaIcon(glyph) {
+  return new Promise((resolve) => {
+    const win = new BrowserWindow({
+      width: 32, height: 32, show: false,
+      webPreferences: { offscreen: true, contextIsolation: true, nodeIntegration: false },
+    });
+    const html = '<!DOCTYPE html><html><head><meta charset="utf-8"><style>' +
+      'html,body{margin:0;padding:0;background:transparent}</style></head><body>' +
+      '<canvas id="c" width="32" height="32"></canvas><script>' +
+        'const ctx=document.getElementById("c").getContext("2d");' +
+        'ctx.fillStyle="#ffffff";ctx.font="600 22px \'Segoe UI Symbol\',\'Segoe UI\',sans-serif";' +
+        'ctx.textAlign="center";ctx.textBaseline="middle";' +
+        'ctx.fillText(decodeURIComponent(location.hash.slice(1)),16,17);' +
+        'window.__png=document.getElementById("c").toDataURL("image/png");' +
+      '</script></body></html>';
+    win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html) + '#' + encodeURIComponent(glyph));
+    win.webContents.once('did-finish-load', async () => {
+      try {
+        const dataUrl = await win.webContents.executeJavaScript('window.__png');
+        resolve(nativeImage.createFromDataURL(String(dataUrl)));
+      } catch { resolve(nativeImage.createEmpty()); }
+      finally { win.destroy(); }
+    });
+    win.webContents.once('did-fail-load', () => { win.destroy(); resolve(nativeImage.createEmpty()); });
+  });
+}
+
+async function initMediaIcons() {
+  if (mediaIcons.play) return;
+  const [prev, play, pause, next] = await Promise.all(
+    ['⏮', '▶', '⏸', '⏭'].map(renderMediaIcon)
+  );
+  Object.assign(mediaIcons, { prev, play, pause, next });
+}
+
+function routeMedia(cmd) {
+  const win = (activeMediaWin && !activeMediaWin.isDestroyed()) ? activeMediaWin : null;
+  if (win) win.webContents.send('media:command', cmd);
+}
+
+function ensureMediaKeys() {
+  if (mediaKeysRegistered || mediaWins.size === 0) return;
+  try {
+    globalShortcut.register('MediaPlayPause', () => routeMedia('playpause'));
+    globalShortcut.register('MediaNextTrack', () => routeMedia('next'));
+    globalShortcut.register('MediaPreviousTrack', () => routeMedia('prev'));
+    mediaKeysRegistered = true;
+    devLog('[media] global media keys registered');
+  } catch (e) { log.warn('media key register failed', e); }
+}
+
+function releaseMediaKeys() {
+  if (!mediaKeysRegistered || mediaWins.size > 0) return;
+  try {
+    globalShortcut.unregister('MediaPlayPause');
+    globalShortcut.unregister('MediaNextTrack');
+    globalShortcut.unregister('MediaPreviousTrack');
+  } catch {}
+  mediaKeysRegistered = false;
+  devLog('[media] global media keys released');
+}
+
+function updateThumbbar(win, s) {
+  if (!win || win.isDestroyed() || !mediaIcons.play) return;
+  if (!s || !s.enabled) { win.setThumbarButtons([]); return; }
+  const label = [s.title, s.artist].filter(Boolean).join(' — ');
+  win.setThumbarButtons([
+    { tooltip: 'Previous', icon: mediaIcons.prev, click: () => win.webContents.send('media:command', 'prev') },
+    {
+      tooltip: (s.playing ? 'Pause' : 'Play') + (label ? ` · ${label}` : ''),
+      icon: s.playing ? mediaIcons.pause : mediaIcons.play,
+      click: () => win.webContents.send('media:command', 'playpause'),
+    },
+    { tooltip: 'Next', icon: mediaIcons.next, click: () => win.webContents.send('media:command', 'next') },
+  ]);
+}
+
+ipcMain.on('media:state', async (e, s) => {
+  const win = BrowserWindow.fromWebContents(e.sender);
+  if (!win || win.isDestroyed()) return;
+  await initMediaIcons();
+  if (s && s.enabled) {
+    if (!mediaWins.has(win)) {
+      mediaWins.add(win);
+      win.once('closed', () => {
+        mediaWins.delete(win);
+        if (activeMediaWin === win) activeMediaWin = [...mediaWins][mediaWins.size - 1] || null;
+        releaseMediaKeys();
+      });
+    }
+    if (s.playing || !activeMediaWin || activeMediaWin.isDestroyed()) activeMediaWin = win;
+    ensureMediaKeys();
+  }
+  updateThumbbar(win, s);
 });
 
 // ---------------------------------------------------------------------------
@@ -1110,6 +1369,7 @@ if (gotLock) {
 }
 
 app.on('before-quit', () => { app.isQuitting = true; });
+app.on('will-quit', () => { try { globalShortcut.unregisterAll(); } catch {} });
 
 app.on('window-all-closed', () => {
   if (trays.size > 0) return; // tray-hidden apps keep running
