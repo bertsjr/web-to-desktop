@@ -30,6 +30,14 @@ function devLog(...args) { if (dev) dev.info(...args); }
 const APP_ID = 'com.bert.webtodesktop';
 app.setAppUserModelId(APP_ID);
 
+// Media keys: let our globalShortcut be the ONLY handler. By default Chromium
+// also routes hardware media keys to the page's MediaSession (YouTube Music sets
+// one), so a physical press fires BOTH Chromium's handler and our shortcut —
+// two toggles that cancel out, so the key appears to do nothing. Disabling
+// HardwareMediaKeyHandling stops Chromium from consuming/acting on media keys,
+// leaving them to globalShortcut → routeMedia. Must run before app 'ready'.
+app.commandLine.appendSwitch('disable-features', 'HardwareMediaKeyHandling');
+
 // ---------------------------------------------------------------------------
 // Activation gate — SHA-256 of the activation key (plaintext never in source).
 // Change this hash to set your own key:
@@ -1228,8 +1236,17 @@ function releaseMediaKeys() {
 
 function updateThumbbar(win, s) {
   if (!win || win.isDestroyed() || !mediaIcons.play) return;
-  if (!s || !s.enabled) { win.setThumbarButtons([]); return; }
-  const label = [s.title, s.artist].filter(Boolean).join(' — ');
+  // Remember the window's base title (app name) so we can restore it when no
+  // track is playing, and show "Artist — Song" in the taskbar while it is.
+  if (win._mediaBaseTitle === undefined) win._mediaBaseTitle = win.getTitle();
+  if (!s || !s.enabled) {
+    win.setThumbarButtons([]);
+    win.setTitle(win._mediaBaseTitle);
+    win.setThumbnailToolTip('');
+    return;
+  }
+  // s.artist / s.title from the media adapter (e.g. YouTube Music player bar).
+  const label = [s.artist, s.title].filter(Boolean).join(': ');
   win.setThumbarButtons([
     { tooltip: 'Previous', icon: mediaIcons.prev, click: () => win.webContents.send('media:command', 'prev') },
     {
@@ -1239,6 +1256,10 @@ function updateThumbbar(win, s) {
     },
     { tooltip: 'Next', icon: mediaIcons.next, click: () => win.webContents.send('media:command', 'next') },
   ]);
+  // Show the track in the taskbar (thumbnail caption + hover tooltip). Falls
+  // back to the app name when we don't have track metadata yet.
+  win.setTitle(label || win._mediaBaseTitle);
+  win.setThumbnailToolTip(label || '');
 }
 
 ipcMain.on('media:state', async (e, s) => {
