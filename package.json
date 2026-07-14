@@ -1,6 +1,6 @@
 {
   "name": "web-to-desktop-app",
-  "version": "2026.7.1",
+  "version": "2026.7.3",
   "description": "Turn any website into its own Windows desktop application.",
   "main": "main.js",
   "author": "Bert",
@@ -8,7 +8,10 @@
   "scripts": {
     "start": "node scripts/dev.js",
     "dist": "electron-builder --win",
-    "publish": "electron-builder --win --publish always"
+    "publish": "node scripts/publish.js",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:e2e": "npx playwright test --config playwright.config.js"
   },
   "build": {
     "appId": "com.bert.webtodesktop",
@@ -16,6 +19,8 @@
     "files": [
       "main.js",
       "preload.js",
+      "google-auth-browser.js",
+      "lib/**/*",
       "renderer/**/*",
       "appshell/**/*",
       "picker/**/*",
@@ -33,7 +38,9 @@
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ]
     },
@@ -48,10 +55,13 @@
   },
   "dependencies": {
     "electron-log": "^5.1.5",
-    "electron-updater": "^6.2.1"
+    "electron-updater": "^6.2.1",
+    "puppeteer-core": "^25.3.0"
   },
   "devDependencies": {
+    "dotenv": "^17.4.2",
     "electron": "^31.0.0",
-    "electron-builder": "^24.13.3"
+    "electron-builder": "^24.13.3",
+    "jest": "^30.4.2"
   }
 }

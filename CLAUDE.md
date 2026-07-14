@@ -8,7 +8,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 npm install         # Downloads Electron (~150 MB) + dependencies
 npm start          # Launch in development (live reload with Ctrl+R)
 npm run dist       # Build Windows NSIS installer (outputs to dist/)
-npm run publish    # Build and publish release to GitHub (requires GH_TOKEN)
+npm run publish    # Build and publish release to GitHub (loads GH_TOKEN from .env)
+npm test           # Run unit tests (Jest)
+npm run test:e2e   # Run e2e tests (Playwright, requires display)
 ```
 
 ## Project Overview
@@ -30,6 +32,11 @@ npm run publish    # Build and publish release to GitHub (requires GH_TOKEN)
 | `appshell/appshell.js` | **App window UI** — toolbar (back/forward/reload), tab bar, webview hosting, drag-reorder tabs, right-click context menu, split-pane logic (horizontal/vertical divider), settings drawer, detached window mode |
 | `appshell/index.html` | App window HTML (tabstrip, webview container, divider, toolbar) |
 | `appshell/preload.js` | **Preload for app windows** — minimal, exposes `api.onXyz` listeners for unread/settings updates |
+| `lib/utils.js` | **Pure utility functions** — extracted for testability: URL normalization, tab migration, auth URL detection, version comparison |
+| `test/utils.test.js` | **Unit tests** (Jest) for lib/utils.js |
+| `test/e2e/` | **E2e test scaffolding** (Playwright) + manual test procedures |
+| `scripts/publish.js` | **Publish wrapper** — loads .env, validates GH_TOKEN, runs electron-builder |
+| `.github/workflows/` | **CI/CD** — ci.yml (PR checks), publish.yml (tag-triggered release) |
 | `package.json` | Dependencies, electron-builder config (NSIS, GitHub publish), app version |
 
 ### Data Model
@@ -165,14 +172,14 @@ None detected (no `.cursorrules` or `.github/copilot-instructions.md`).
 
 ### Adding a new app setting
 
-1. Add field to `DEFAULT_APP_SETTINGS` in main.js
+1. Add field to `DEFAULT_APP_SETTINGS` in `lib/utils.js`
 2. Add UI control in renderer/index.html
 3. Add event listener in renderer/renderer.js to call `api.save()`
 4. Add handler in main.js if settings affect app behavior (e.g., tray, startup)
 
 ### Adding a new tab setting
 
-1. Add field to `DEFAULT_TAB_SETTINGS` in main.js
+1. Add field to `DEFAULT_TAB_SETTINGS` in `lib/utils.js`
 2. In renderer tab editor: add input, bind to tab.settings
 3. In appshell: add UI control or settings drawer toggle
 4. Call `api.updateTab(appId, tabId, newSettings)` from appshell
@@ -191,3 +198,60 @@ None detected (no `.cursorrules` or `.github/copilot-instructions.md`).
 - **Session isolation:** each tab partition is isolated; IPC broadcasts unread count to sync UI across windows
 - **Preload bridges:** two preload files (one for dashboard, one for appshell) expose only necessary APIs
 - **No framework:** vanilla JS (no React/Vue); DOM manipulation with vanilla selectors and innerHTML
+
+## Testing
+
+### Unit Tests (Jest)
+
+```bash
+npm test              # Run all unit tests
+npm run test:watch    # Watch mode
+```
+
+- Tests live in `test/utils.test.js` and cover all pure functions in `lib/utils.js`.
+- When adding new pure logic, put it in `lib/utils.js` and add corresponding tests.
+- **All code changes require test updates** — add or update tests for any modified pure function.
+
+### E2e Tests (Playwright)
+
+```bash
+npm run test:e2e      # Requires @playwright/test installed and a display
+```
+
+- E2e scaffolding is in `test/e2e/app.e2e.test.js`. Launches the real Electron app.
+- Manual test procedures for non-automatable features (notifications, tray, startup, split view) are documented as comments in the e2e test file.
+
+### Adding a Pure Function
+
+1. Add the function to `lib/utils.js` and export it
+2. Import it in `main.js` (add to the destructured require)
+3. Add tests in `test/utils.test.js`
+4. Run `npm test` to verify
+
+## CI/CD
+
+### PR Checks (`.github/workflows/ci.yml`)
+
+- Runs `npm test` on `windows-latest` for every PR to `main` and push to `main`/`stage`.
+- Tests must pass before merge.
+
+### Publish (`.github/workflows/publish.yml`)
+
+- Triggered by pushing a `v*` tag (e.g., `git tag v2026.7.3 && git push --tags`).
+- Runs tests, builds the NSIS installer, publishes to GitHub Releases.
+- Updates the release body from `RELEASE-NOTES.md` (or `RELEASE-NOTES-TEMPLATE.md` if not present).
+- Requires `GH_TOKEN` repository secret (Settings > Secrets > Actions).
+
+### Local Publish
+
+```bash
+npm run publish       # Loads GH_TOKEN from .env automatically
+```
+
+### Release Workflow
+
+1. Make changes, add/update tests, verify `npm test` passes
+2. Bump version in `package.json`
+3. Copy `RELEASE-NOTES-TEMPLATE.md` to `RELEASE-NOTES.md`, fill in changes
+4. Commit, tag (`git tag v<version>`), push with tags
+5. The publish workflow builds, publishes, and updates the GitHub Release

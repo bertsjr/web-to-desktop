@@ -3,4 +3,5 @@ dist/
 logs/
 *.log
 .env
+coverage/
 .claude

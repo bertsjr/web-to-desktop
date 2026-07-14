@@ -1,8 +1,9 @@
-const { app, BrowserWindow, ipcMain, shell, nativeImage, session, Tray, Menu, net, desktopCapturer } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, nativeImage, session, Tray, Menu, net, desktopCapturer, globalShortcut, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 const log = require('electron-log');
+const { loginViaSystemBrowser } = require('./google-auth-browser');
 
 // ---------------------------------------------------------------------------
 // Logging — written to <userData>/logs/main.log (always writable on Windows).
@@ -28,6 +29,14 @@ function devLog(...args) { if (dev) dev.info(...args); }
 
 const APP_ID = 'com.bert.webtodesktop';
 app.setAppUserModelId(APP_ID);
+
+// Media keys: let our globalShortcut be the ONLY handler. By default Chromium
+// also routes hardware media keys to the page's MediaSession (YouTube Music sets
+// one), so a physical press fires BOTH Chromium's handler and our shortcut —
+// two toggles that cancel out, so the key appears to do nothing. Disabling
+// HardwareMediaKeyHandling stops Chromium from consuming/acting on media keys,
+// leaving them to globalShortcut → routeMedia. Must run before app 'ready'.
+app.commandLine.appendSwitch('disable-features', 'HardwareMediaKeyHandling');
 
 // ---------------------------------------------------------------------------
 // Activation gate — SHA-256 of the activation key (plaintext never in source).
@@ -70,9 +79,19 @@ const APP_ICON = nativeImage.createFromPath(path.join(__dirname, 'assets', 'icon
 // Per-app icons (set at runtime from each app's configured icon or favicon).
 const appIcons = new Map(); // appId -> nativeImage
 
+// Present a clean, CONSISTENT desktop-Chrome identity. Electron's default UA
+// string carries an "Electron/<ver>" token (plus the app name) that browsers
+// like Google flag as an embedded framework — so we override just the UA string
+// to a plain Chrome matching our actual engine version. Everything else
+// (Sec-CH-UA client hints, navigator.userAgentData) is left as Chromium reports
+// it natively, which is already a consistent "Chromium 126" with no Electron
+// brand. The engine here is Chromium 126 (Electron 31); the UA MUST stay in sync
+// with that major version — a mismatch (e.g. claiming Chrome 137 on a 126
+// engine) is exactly the inconsistency Google's "this browser may not be secure"
+// check keys on.
 const DESKTOP_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
-  '(KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36 Edg/137.0.0.0';
+  '(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
 app.userAgentFallback = DESKTOP_UA;
 
 // Download an image URL (no CORS limits in main) into a nativeImage.
@@ -113,48 +132,14 @@ function applyAppIcon(appId, img) {
 // ---------------------------------------------------------------------------
 // Persistent store
 // ---------------------------------------------------------------------------
+const {
+  normalizeUrl, normalizeTabs, migrateApp, partitionFor,
+  isAuthUrl, isGoogleAuthUrl, cleanGoogleAuthUrl, cmpVersion,
+  sanitizeFileName, appIdFromArgv,
+  DEFAULT_APP_SETTINGS, DEFAULT_TAB_SETTINGS,
+} = require('./lib/utils');
+
 const STORE_PATH = path.join(app.getPath('userData'), 'apps.json');
-const DEFAULT_APP_SETTINGS = { minimizeToTray: false, launchOnStartup: false };
-const DEFAULT_TAB_SETTINGS = { notifications: true, persistSession: true };
-
-function normalizeUrl(url) {
-  if (!url) return url;
-  if (!/^https?:\/\//i.test(url)) return 'https://' + url;
-  return url;
-}
-
-function normalizeTabs(tabs, legacyTabSettings) {
-  const out = (tabs || [])
-    .filter((t) => t && (t.url || '').trim())
-    .map((t) => ({
-      id: t.id || crypto.randomUUID(),
-      name: (t.name || '').trim() || 'Tab',
-      url: normalizeUrl((t.url || '').trim()),
-      settings: { ...DEFAULT_TAB_SETTINGS, ...(legacyTabSettings || {}), ...(t.settings || {}) },
-    }));
-  return out;
-}
-
-// Migrate older records (single url, or app-level notifications/persist).
-function migrateApp(a) {
-  const legacy = {};
-  if (a.settings && 'notifications' in a.settings) legacy.notifications = a.settings.notifications;
-  if (a.settings && 'persistSession' in a.settings) legacy.persistSession = a.settings.persistSession;
-
-  let tabs = Array.isArray(a.tabs)
-    ? a.tabs
-    : [{ id: crypto.randomUUID(), name: a.name || 'Tab', url: a.url || '' }];
-  a.tabs = normalizeTabs(tabs, legacy);
-  if (a.tabs.length === 0) {
-    a.tabs = [{ id: crypto.randomUUID(), name: a.name || 'Tab', url: '', settings: { ...DEFAULT_TAB_SETTINGS } }];
-  }
-
-  a.settings = {
-    minimizeToTray: !!(a.settings && a.settings.minimizeToTray),
-    launchOnStartup: !!(a.settings && a.settings.launchOnStartup),
-  };
-  return a;
-}
 
 function loadApps() {
   try {
@@ -172,12 +157,6 @@ function getApp(id) { return loadApps().find((a) => a.id === id); }
 function getTab(appId, tabId) {
   const a = getApp(appId);
   return a && a.tabs.find((t) => t.id === tabId);
-}
-
-// Each TAB is its own entity, with its own persisted (or private) session.
-function partitionFor(tab) {
-  const prefix = tab.settings.persistSession !== false ? 'persist:' : '';
-  return `${prefix}tab-${tab.id}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -293,11 +272,13 @@ ipcMain.on('picker:choose', (_e, { id, audio }) => {
 ipcMain.on('picker:cancel', () => { if (activePicker) activePicker.finish(null); });
 
 // ---------------------------------------------------------------------------
-// Per-tab session: user-agent + notification permission gating
+// Per-tab session: notification permission gating
 // ---------------------------------------------------------------------------
+// The desktop-Chrome UA is applied globally via app.userAgentFallback (see top
+// of file); Sec-CH-UA client hints and navigator.userAgentData are left as
+// Chromium reports them natively — a consistent "Chromium 126" identity.
 function setupSession(appId, tab) {
   const ses = session.fromPartition(partitionFor(tab));
-  ses.setUserAgent(DESKTOP_UA);
   const allow = (permission) => {
     if (permission === 'notifications') {
       const t = getTab(appId, tab.id);
@@ -345,6 +326,68 @@ function setupSession(appId, tab) {
   });
 }
 
+// A small always-on-top hint shown while the external browser login happens.
+function showAuthHint(guestContents) {
+  let parent;
+  try { parent = BrowserWindow.fromWebContents(guestContents.hostWebContents); } catch {}
+  const win = new BrowserWindow({
+    width: 400, height: 190, parent: parent || undefined, resizable: false,
+    minimizable: false, maximizable: false, title: 'Signing in…',
+    autoHideMenuBar: true, alwaysOnTop: true,
+  });
+  win.removeMenu();
+  const html = '<!doctype html><meta charset="utf-8"><body style="font-family:Segoe UI,system-ui,sans-serif;'
+    + 'margin:0;padding:22px;background:#1f1f1f;color:#eee">'
+    + '<h3 style="margin:0 0 10px;font-size:16px">Finish signing in</h3>'
+    + '<p style="margin:0;line-height:1.5;font-size:13px">A Chrome window has opened. Complete your '
+    + 'Google sign-in there.<br><br>This closes automatically and the app refreshes signed in.</p></body>';
+  win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
+  return win;
+}
+
+// Google blocks sign-in from the Electron runtime, so we run the login in the
+// user's real Chrome/Edge and import the resulting session cookies into this
+// tab's session (see google-auth-browser.js). Then reload the webview signed in.
+let googleAuthInProgress = false;
+async function startGoogleAuthViaBrowser(authUrl, guestContents) {
+  if (googleAuthInProgress) { devLog('[sysauth] already in progress, ignoring'); return; }
+  googleAuthInProgress = true;
+  const cleanUrl = cleanGoogleAuthUrl(authUrl);
+  devLog('[sysauth] starting Google login via system browser', cleanUrl);
+  const hint = showAuthHint(guestContents);
+  try {
+    const res = await loginViaSystemBrowser({
+      loginUrl: cleanUrl,
+      targetSession: guestContents.session,
+      isSignedInUrl: (u) => {
+        try {
+          const parsed = new URL(u);
+          return /(^|\.)youtube\.com$/i.test(parsed.hostname) && !/\/signin/i.test(parsed.pathname);
+        } catch { return false; }
+      },
+      log: (...a) => devLog(...a),
+    });
+    devLog('[sysauth] result', res);
+    try { if (!hint.isDestroyed()) hint.close(); } catch {}
+    if (res.ok) {
+      try { if (!guestContents.isDestroyed()) guestContents.reload(); } catch {}
+    } else {
+      const msg = {
+        'no-browser': 'No Chrome or Edge was found to sign in with.',
+        closed: 'The sign-in window was closed before finishing.',
+        timeout: 'Sign-in timed out. Please try again.',
+      }[res.reason] || ('Sign-in did not complete (' + res.reason + ').');
+      try {
+        const parentWin = BrowserWindow.fromWebContents(guestContents.hostWebContents);
+        dialog.showMessageBox(parentWin || undefined, { type: 'warning', title: 'Sign-in', message: msg });
+      } catch {}
+    }
+  } finally {
+    googleAuthInProgress = false;
+    try { if (!hint.isDestroyed()) hint.close(); } catch {}
+  }
+}
+
 // External links open in the real browser / associated desktop app.
 app.on('web-contents-created', (_e, contents) => {
   devLog('[web-contents-created] type:', contents.getType(), 'id:', contents.id);
@@ -357,6 +400,14 @@ app.on('web-contents-created', (_e, contents) => {
     if (url === 'about:blank' && contents.getType() === 'webview') {
       return { action: 'allow', overrideBrowserWindowOptions: { show: false } };
     }
+    // OAuth / SSO popups (e.g. Microsoft/Google login) must stay in-app so they
+    // share the tab's session and can postMessage the result back to the opener.
+    // This popup is a real top-level window (not a webview), so it presents the
+    // clean desktop-Chrome UA set globally via app.userAgentFallback.
+    if (isAuthUrl(url)) {
+      devLog('[setWindowOpenHandler] → allowing auth popup in-app', url);
+      return { action: 'allow' };
+    }
     if (url && url !== 'about:blank') {
       shell.openExternal(url);
     }
@@ -368,8 +419,19 @@ app.on('web-contents-created', (_e, contents) => {
   contents.on('did-create-window', (popup) => {
     devLog('[did-create-window] popup from', contents.getType());
     const pc = popup.webContents;
+    // If this is an auth popup, let it run its full sign-in flow untouched.
+    if (isAuthUrl(pc.getURL())) {
+      devLog('[did-create-window] auth popup — leaving open for sign-in');
+      return;
+    }
     pc.on('will-navigate', (e, url) => {
       devLog('[popup will-navigate]', url);
+      // A popup that starts on about:blank may navigate into an auth flow —
+      // keep those in-app too.
+      if (isAuthUrl(url)) {
+        devLog('[popup will-navigate] → auth URL, keeping in-app', url);
+        return;
+      }
       e.preventDefault();
       shell.openExternal(url);
       popup.close();
@@ -377,7 +439,7 @@ app.on('web-contents-created', (_e, contents) => {
     // Give the popup time for JS to run (e.g. Outlook sets window.location
     // after about:blank loads). Clean up after 30s if nothing happened.
     setTimeout(() => {
-      if (!popup.isDestroyed()) {
+      if (!popup.isDestroyed() && !isAuthUrl(popup.webContents.getURL())) {
         devLog('[popup] closing idle popup after timeout');
         popup.close();
       }
@@ -390,6 +452,15 @@ app.on('web-contents-created', (_e, contents) => {
     const cType = contents.getType();
     devLog('[will-navigate]', { url, contentType: cType, currentURL: contents.getURL() });
     if (cType !== 'webview') return;
+    // Google sign-in can't run inside the webview (Google blocks embedded
+    // frameworks). Divert the initial hop into Google login to a real top-level
+    // window that shares this tab's session; skip if we're already mid-flow.
+    if (isGoogleAuthUrl(url) && !isGoogleAuthUrl(contents.getURL())) {
+      e.preventDefault();
+      devLog('[will-navigate] → diverting Google auth to system browser', url);
+      startGoogleAuthViaBrowser(url, contents);
+      return;
+    }
     try {
       const dest = new URL(url);
       // Non-http(s) protocols → open with OS handler (Excel, Teams, etc.)
@@ -404,6 +475,14 @@ app.on('web-contents-created', (_e, contents) => {
       // (preserving auth cookies). Otherwise open in default browser.
       const curr = contents.getURL();
       if (curr && new URL(curr).origin !== dest.origin) {
+        // OAuth / SSO redirect — keep it in the webview so the sign-in shares
+        // the tab's session. Covers both directions: app → auth provider
+        // (e.g. Outlook → login.microsoftonline.com) and the return redirect
+        // auth provider → app (e.g. login.microsoftonline.com → Outlook).
+        if (isAuthUrl(url) || isAuthUrl(curr)) {
+          devLog('[will-navigate] → allowing auth navigation in-app', url);
+          return;
+        }
         const downloadExts = /\.(docx?|xlsx?|pptx?|pdf|zip|rar|7z|gz|tar|csv|txt|exe|msi|dmg|pkg|ics|eml|msg|odt|ods|odp|rtf|mp3|mp4|wav|avi|mov|png|jpe?g|gif|svg|bmp|webp)(\?.*)?$/i;
         if (downloadExts.test(dest.pathname)) {
           devLog('[will-navigate] → allowing download URL (cross-origin)', url);
@@ -497,6 +576,27 @@ function loadCachedIcon(appId) {
   } catch {}
 }
 
+// Give each app window its own taskbar identity (AppUserModelID) so separately
+// launched standalone apps don't collapse into a single taskbar group. Windows
+// groups by AUMID; without a per-window id, every window inherits the
+// process-global id (shared across apps under the single-instance lock) and
+// they group together. The id matches the AUMID on the installed shortcut
+// (writeShortcuts), so a running window also associates with its pinned entry.
+function applyWindowAppId(win, appDef) {
+  if (process.platform !== 'win32' || !appDef) return;
+  const relaunchArgs = app.isPackaged
+    ? `--app-id=${appDef.id}`
+    : `"${app.getAppPath()}" --app-id=${appDef.id}`;
+  const details = {
+    appId: `${APP_ID}.${appDef.id}`,
+    relaunchCommand: `"${process.execPath}" ${relaunchArgs}`,
+    relaunchDisplayName: appDef.name,
+  };
+  const ico = iconCachePath(appDef.id);
+  if (fs.existsSync(ico)) { details.appIconPath = ico; details.appIconIndex = 0; }
+  try { win.setAppDetails(details); } catch (e) { log.warn('setAppDetails failed', e); }
+}
+
 function launchApp(appDef) {
   const existing = appWindows.get(appDef.id);
   if (existing && !existing.isDestroyed()) { existing.show(); existing.focus(); return; }
@@ -514,6 +614,7 @@ function launchApp(appDef) {
     },
   });
   win.removeMenu();
+  applyWindowAppId(win, appDef);
   win.loadFile(path.join(__dirname, 'appshell', 'index.html'), { query: { id: appDef.id } });
   win.on('page-title-updated', (e) => { e.preventDefault(); win.setTitle(appDef.name); });
 
@@ -554,6 +655,7 @@ function detachTab(appId, tabId) {
     },
   });
   win.removeMenu();
+  applyWindowAppId(win, getApp(appId));
   win.loadFile(path.join(__dirname, 'appshell', 'index.html'), {
     query: { id: appId, tab: tabId, detached: '1' },
   });
@@ -582,15 +684,6 @@ function detachTab(appId, tabId) {
 // ---------------------------------------------------------------------------
 // Standalone desktop apps — per-app .ico generation + Windows shortcuts
 // ---------------------------------------------------------------------------
-function appIdFromArgv(argv) {
-  const a = (argv || []).find((x) => typeof x === 'string' && x.startsWith('--app-id='));
-  return a ? a.slice('--app-id='.length) : null;
-}
-
-function sanitizeFileName(name) {
-  return String(name || 'App').replace(/[\\/:*?"<>|]/g, '').trim() || 'App';
-}
-
 function iconCachePath(id) {
   return path.join(app.getPath('userData'), 'icons', `${id}.ico`);
 }
@@ -861,10 +954,20 @@ ipcMain.handle('app:rollback', async () => {
 // ---------------------------------------------------------------------------
 // IPC — app shell (per-tab + app-level settings, tabs, detach, exit)
 // ---------------------------------------------------------------------------
+// Absolute file:// URL of the media webview preload — computed here in the
+// main process (full Node), since the appshell preload is sandboxed and cannot
+// require('path')/require('url').
+const MEDIA_PRELOAD_URL = require('url')
+  .pathToFileURL(path.join(__dirname, 'appshell', 'media-preload.js')).href;
+
 ipcMain.handle('app:get', (_e, id) => {
   const a = getApp(id);
   if (!a) return null;
-  return { ...a, tabs: a.tabs.map((t) => ({ ...t, _partition: partitionFor(t) })) };
+  return {
+    ...a,
+    mediaPreloadPath: MEDIA_PRELOAD_URL,
+    tabs: a.tabs.map((t) => ({ ...t, _partition: partitionFor(t) })),
+  };
 });
 
 ipcMain.handle('app:setTabSettings', (_e, { appId, tabId, settings }) => {
@@ -941,6 +1044,128 @@ ipcMain.on('shell:unread', (e, { id, count }) => {
 });
 
 // ---------------------------------------------------------------------------
+// Media controls — taskbar thumbnail-toolbar buttons (shown on taskbar hover /
+// when minimized) and global hardware media keys, driving a media tab
+// (e.g. YouTube Music). A media webview reports playback state via the appshell
+// (media:state); we mirror it into the window's thumbbar and route transport
+// commands (media:command) back down. See appshell/media-preload.js.
+// ---------------------------------------------------------------------------
+const mediaIcons = {};                 // { prev, play, pause, next } nativeImages
+const mediaWins = new Set();           // windows currently hosting a media tab
+let activeMediaWin = null;             // most recently active media window
+let mediaKeysRegistered = false;
+
+// White transport glyph on a transparent square → nativeImage (~32px).
+function renderMediaIcon(glyph) {
+  return new Promise((resolve) => {
+    const win = new BrowserWindow({
+      width: 32, height: 32, show: false,
+      webPreferences: { offscreen: true, contextIsolation: true, nodeIntegration: false },
+    });
+    const html = '<!DOCTYPE html><html><head><meta charset="utf-8"><style>' +
+      'html,body{margin:0;padding:0;background:transparent}</style></head><body>' +
+      '<canvas id="c" width="32" height="32"></canvas><script>' +
+        'const ctx=document.getElementById("c").getContext("2d");' +
+        'ctx.fillStyle="#ffffff";ctx.font="600 22px \'Segoe UI Symbol\',\'Segoe UI\',sans-serif";' +
+        'ctx.textAlign="center";ctx.textBaseline="middle";' +
+        'ctx.fillText(decodeURIComponent(location.hash.slice(1)),16,17);' +
+        'window.__png=document.getElementById("c").toDataURL("image/png");' +
+      '</script></body></html>';
+    win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html) + '#' + encodeURIComponent(glyph));
+    win.webContents.once('did-finish-load', async () => {
+      try {
+        const dataUrl = await win.webContents.executeJavaScript('window.__png');
+        resolve(nativeImage.createFromDataURL(String(dataUrl)));
+      } catch { resolve(nativeImage.createEmpty()); }
+      finally { win.destroy(); }
+    });
+    win.webContents.once('did-fail-load', () => { win.destroy(); resolve(nativeImage.createEmpty()); });
+  });
+}
+
+async function initMediaIcons() {
+  if (mediaIcons.play) return;
+  const [prev, play, pause, next] = await Promise.all(
+    ['⏮', '▶', '⏸', '⏭'].map(renderMediaIcon)
+  );
+  Object.assign(mediaIcons, { prev, play, pause, next });
+}
+
+function routeMedia(cmd) {
+  const win = (activeMediaWin && !activeMediaWin.isDestroyed()) ? activeMediaWin : null;
+  if (win) win.webContents.send('media:command', cmd);
+}
+
+function ensureMediaKeys() {
+  if (mediaKeysRegistered || mediaWins.size === 0) return;
+  try {
+    globalShortcut.register('MediaPlayPause', () => routeMedia('playpause'));
+    globalShortcut.register('MediaNextTrack', () => routeMedia('next'));
+    globalShortcut.register('MediaPreviousTrack', () => routeMedia('prev'));
+    mediaKeysRegistered = true;
+    devLog('[media] global media keys registered');
+  } catch (e) { log.warn('media key register failed', e); }
+}
+
+function releaseMediaKeys() {
+  if (!mediaKeysRegistered || mediaWins.size > 0) return;
+  try {
+    globalShortcut.unregister('MediaPlayPause');
+    globalShortcut.unregister('MediaNextTrack');
+    globalShortcut.unregister('MediaPreviousTrack');
+  } catch {}
+  mediaKeysRegistered = false;
+  devLog('[media] global media keys released');
+}
+
+function updateThumbbar(win, s) {
+  if (!win || win.isDestroyed() || !mediaIcons.play) return;
+  // Remember the window's base title (app name) so we can restore it when no
+  // track is playing, and show "Artist — Song" in the taskbar while it is.
+  if (win._mediaBaseTitle === undefined) win._mediaBaseTitle = win.getTitle();
+  if (!s || !s.enabled) {
+    win.setThumbarButtons([]);
+    win.setTitle(win._mediaBaseTitle);
+    win.setThumbnailToolTip('');
+    return;
+  }
+  // s.artist / s.title from the media adapter (e.g. YouTube Music player bar).
+  const label = [s.artist, s.title].filter(Boolean).join(': ');
+  win.setThumbarButtons([
+    { tooltip: 'Previous', icon: mediaIcons.prev, click: () => win.webContents.send('media:command', 'prev') },
+    {
+      tooltip: (s.playing ? 'Pause' : 'Play') + (label ? ` · ${label}` : ''),
+      icon: s.playing ? mediaIcons.pause : mediaIcons.play,
+      click: () => win.webContents.send('media:command', 'playpause'),
+    },
+    { tooltip: 'Next', icon: mediaIcons.next, click: () => win.webContents.send('media:command', 'next') },
+  ]);
+  // Show the track in the taskbar (thumbnail caption + hover tooltip). Falls
+  // back to the app name when we don't have track metadata yet.
+  win.setTitle(label || win._mediaBaseTitle);
+  win.setThumbnailToolTip(label || '');
+}
+
+ipcMain.on('media:state', async (e, s) => {
+  const win = BrowserWindow.fromWebContents(e.sender);
+  if (!win || win.isDestroyed()) return;
+  await initMediaIcons();
+  if (s && s.enabled) {
+    if (!mediaWins.has(win)) {
+      mediaWins.add(win);
+      win.once('closed', () => {
+        mediaWins.delete(win);
+        if (activeMediaWin === win) activeMediaWin = [...mediaWins][mediaWins.size - 1] || null;
+        releaseMediaKeys();
+      });
+    }
+    if (s.playing || !activeMediaWin || activeMediaWin.isDestroyed()) activeMediaWin = win;
+    ensureMediaKeys();
+  }
+  updateThumbbar(win, s);
+});
+
+// ---------------------------------------------------------------------------
 // Auto-update (electron-updater, GitHub Releases)
 //
 // Policy: install only versions >= the current one (no silent downgrades), and
@@ -955,25 +1180,6 @@ autoUpdater.allowDowngrade = false;   // never auto-install an older version
 autoUpdater.allowPrerelease = true;   // accept newer pre-release / unpublished builds
 
 let rollbackMode = false;
-
-// Compare dotted versions ("2026.6.2", "1.2.3-beta.1"). Returns -1 / 0 / 1.
-function cmpVersion(a, b) {
-  const parse = (v) => {
-    const [core, pre = ''] = String(v).replace(/^v/i, '').split('-');
-    return { nums: core.split('.').map((n) => parseInt(n, 10) || 0), pre };
-  };
-  const A = parse(a);
-  const B = parse(b);
-  const len = Math.max(A.nums.length, B.nums.length);
-  for (let i = 0; i < len; i++) {
-    const d = (A.nums[i] || 0) - (B.nums[i] || 0);
-    if (d) return d > 0 ? 1 : -1;
-  }
-  if (A.pre === B.pre) return 0;
-  if (!A.pre) return 1;     // a release outranks a pre-release of the same core
-  if (!B.pre) return -1;
-  return A.pre > B.pre ? 1 : -1;
-}
 
 function sendUpdate(payload) {
   if (managerWindow && !managerWindow.isDestroyed()) managerWindow.webContents.send('update:status', payload);
@@ -1049,6 +1255,7 @@ if (gotLock) {
 }
 
 app.on('before-quit', () => { app.isQuitting = true; });
+app.on('will-quit', () => { try { globalShortcut.unregisterAll(); } catch {} });
 
 app.on('window-all-closed', () => {
   if (trays.size > 0) return; // tray-hidden apps keep running

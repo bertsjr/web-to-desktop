@@ -21,4 +21,9 @@ contextBridge.exposeInMainWorld('api', {
   unread: (id, count) => ipcRenderer.send('shell:unread', { id, count }),
   onTabDetached: (cb) => ipcRenderer.on('shell:tabDetached', (_e, d) => cb(d)),
   onTabReturned: (cb) => ipcRenderer.on('shell:tabReturned', (_e, d) => cb(d)),
+  // Media controls (taskbar thumbbar + hardware media keys). The preload path
+  // is provided by main via app:get (see appshell.js), not computed here — this
+  // preload is sandboxed and cannot require('path')/require('url').
+  mediaState: (state) => ipcRenderer.send('media:state', state),
+  onMediaCommand: (cb) => ipcRenderer.on('media:command', (_e, cmd) => cb(cmd)),
 });
