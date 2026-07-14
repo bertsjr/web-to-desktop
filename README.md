@@ -95,6 +95,28 @@ Apps, tabs, and settings are stored in `apps.json` in the per-user data folder (
 | `renderer/` | Manager dashboard (list / add / edit, per-tab settings, version + updates). |
 | `appshell/` | The window each app opens into: toolbar, draggable tabs, split panes, right-click menu, settings drawer. |
 | `package.json` | Dependencies and the electron-builder / publish config. |
+| `lib/utils.js` | Pure utility functions extracted for testability (URL normalization, version comparison, auth helpers). |
+| `test/` | Unit tests (Jest) and e2e test scaffolding (Playwright). |
+| `.github/workflows/` | CI (PR checks) and publish (tag-triggered release) workflows. |
+
+## Testing
+
+```bash
+npm test              # Run unit tests (Jest)
+npm run test:watch    # Run tests in watch mode
+npm run test:e2e      # Run e2e tests (Playwright, requires display)
+```
+
+Unit tests cover the pure functions in `lib/utils.js`: URL normalization, tab migration, session partitioning, auth URL detection, version comparison, and filename sanitization.
+
+E2e tests are scaffolded in `test/e2e/` and launch the real Electron app. They require a display and are not run in CI by default. Manual test procedures for features that can't be automated (notifications, tray, startup, split view) are documented in `test/e2e/app.e2e.test.js`.
+
+## CI/CD
+
+- **PR checks** (`.github/workflows/ci.yml`): Runs `npm test` on `windows-latest` for every PR to `main` and every push to `main`/`stage`.
+- **Publish** (`.github/workflows/publish.yml`): Triggered by pushing a `v*` tag. Runs tests, builds the installer, publishes to GitHub Releases, and updates the release notes.
+- **Release notes**: Copy `RELEASE-NOTES-TEMPLATE.md` to `RELEASE-NOTES.md` and fill in before tagging. The publish workflow uses it for the GitHub Release body.
+- **Secret required**: Add `GH_TOKEN` (with `repo` scope) as a repository secret in GitHub Settings > Secrets.
 
 ## Notes
 

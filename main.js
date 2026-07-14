@@ -132,48 +132,14 @@ function applyAppIcon(appId, img) {
 // ---------------------------------------------------------------------------
 // Persistent store
 // ---------------------------------------------------------------------------
+const {
+  normalizeUrl, normalizeTabs, migrateApp, partitionFor,
+  isAuthUrl, isGoogleAuthUrl, cleanGoogleAuthUrl, cmpVersion,
+  sanitizeFileName, appIdFromArgv,
+  DEFAULT_APP_SETTINGS, DEFAULT_TAB_SETTINGS,
+} = require('./lib/utils');
+
 const STORE_PATH = path.join(app.getPath('userData'), 'apps.json');
-const DEFAULT_APP_SETTINGS = { minimizeToTray: false, launchOnStartup: false };
-const DEFAULT_TAB_SETTINGS = { notifications: true, persistSession: true, mediaControls: false };
-
-function normalizeUrl(url) {
-  if (!url) return url;
-  if (!/^https?:\/\//i.test(url)) return 'https://' + url;
-  return url;
-}
-
-function normalizeTabs(tabs, legacyTabSettings) {
-  const out = (tabs || [])
-    .filter((t) => t && (t.url || '').trim())
-    .map((t) => ({
-      id: t.id || crypto.randomUUID(),
-      name: (t.name || '').trim() || 'Tab',
-      url: normalizeUrl((t.url || '').trim()),
-      settings: { ...DEFAULT_TAB_SETTINGS, ...(legacyTabSettings || {}), ...(t.settings || {}) },
-    }));
-  return out;
-}
-
-// Migrate older records (single url, or app-level notifications/persist).
-function migrateApp(a) {
-  const legacy = {};
-  if (a.settings && 'notifications' in a.settings) legacy.notifications = a.settings.notifications;
-  if (a.settings && 'persistSession' in a.settings) legacy.persistSession = a.settings.persistSession;
-
-  let tabs = Array.isArray(a.tabs)
-    ? a.tabs
-    : [{ id: crypto.randomUUID(), name: a.name || 'Tab', url: a.url || '' }];
-  a.tabs = normalizeTabs(tabs, legacy);
-  if (a.tabs.length === 0) {
-    a.tabs = [{ id: crypto.randomUUID(), name: a.name || 'Tab', url: '', settings: { ...DEFAULT_TAB_SETTINGS } }];
-  }
-
-  a.settings = {
-    minimizeToTray: !!(a.settings && a.settings.minimizeToTray),
-    launchOnStartup: !!(a.settings && a.settings.launchOnStartup),
-  };
-  return a;
-}
 
 function loadApps() {
   try {
@@ -191,12 +157,6 @@ function getApp(id) { return loadApps().find((a) => a.id === id); }
 function getTab(appId, tabId) {
   const a = getApp(appId);
   return a && a.tabs.find((t) => t.id === tabId);
-}
-
-// Each TAB is its own entity, with its own persisted (or private) session.
-function partitionFor(tab) {
-  const prefix = tab.settings.persistSession !== false ? 'persist:' : '';
-  return `${prefix}tab-${tab.id}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -364,73 +324,6 @@ function setupSession(appId, tab) {
       }
     });
   });
-}
-
-// Identity-provider hosts used for OAuth / SSO sign-in. Navigations and popups
-// to these must stay INSIDE the app — they share the tab's session cookies, so
-// shunting them to the external browser (which has no session) breaks login.
-// Matches the host exactly or any subdomain of it.
-const AUTH_HOSTS = [
-  // Microsoft (Outlook, Office 365, Teams, Azure AD / Entra)
-  'login.microsoftonline.com',
-  'login.microsoftonline.us',
-  'login.microsoft.com',
-  'login.live.com',
-  'login.windows.net',
-  'account.live.com',
-  'account.microsoft.com',
-  'msauth.net',
-  'msftauth.net',
-  'microsoftonline.com',
-  // Google
-  'accounts.google.com',
-  'accounts.youtube.com',
-  // Common third-party identity providers
-  'okta.com',
-  'auth0.com',
-  'onelogin.com',
-  'pingidentity.com',
-  'duosecurity.com',
-];
-
-function isAuthUrl(url) {
-  try {
-    const host = new URL(url).hostname.toLowerCase();
-    return AUTH_HOSTS.some((h) => host === h || host.endsWith('.' + h));
-  } catch {
-    return false;
-  }
-}
-
-// Google specifically blocks sign-in from embedded browser frameworks — an
-// Electron <webview> guest counts as one, so its login page is rejected with
-// "This browser or app may not be secure." Microsoft/Okta/etc. do NOT do this
-// and sign in fine inside the webview, so this is scoped to Google alone.
-const GOOGLE_AUTH_HOSTS = ['accounts.google.com', 'accounts.youtube.com'];
-function isGoogleAuthUrl(url) {
-  try {
-    const host = new URL(url).hostname.toLowerCase();
-    return GOOGLE_AUTH_HOSTS.some((h) => host === h || host.endsWith('.' + h));
-  } catch {
-    return false;
-  }
-}
-
-// YouTube Music's own sign-in link carries params that flag the login as an
-// embedded/restricted context — `uilel` (UI login element level, =3 for
-// webview-style) and `ltmpl=music` (the embedded "music" template). Google
-// marks the whole flow embedded from the identifier step and enforces the
-// "browser may not be secure" block after the email is submitted, even in a
-// real top-level window. Strip those flags so our trusted window runs a normal
-// browser sign-in; keep `continue` so the youtube.com handshake still sets the
-// session cookies YTMusic needs.
-function cleanGoogleAuthUrl(rawUrl) {
-  try {
-    const u = new URL(rawUrl);
-    u.searchParams.delete('uilel');
-    u.searchParams.delete('ltmpl');
-    return u.toString();
-  } catch { return rawUrl; }
 }
 
 // A small always-on-top hint shown while the external browser login happens.
@@ -791,15 +684,6 @@ function detachTab(appId, tabId) {
 // ---------------------------------------------------------------------------
 // Standalone desktop apps — per-app .ico generation + Windows shortcuts
 // ---------------------------------------------------------------------------
-function appIdFromArgv(argv) {
-  const a = (argv || []).find((x) => typeof x === 'string' && x.startsWith('--app-id='));
-  return a ? a.slice('--app-id='.length) : null;
-}
-
-function sanitizeFileName(name) {
-  return String(name || 'App').replace(/[\\/:*?"<>|]/g, '').trim() || 'App';
-}
-
 function iconCachePath(id) {
   return path.join(app.getPath('userData'), 'icons', `${id}.ico`);
 }
@@ -1296,25 +1180,6 @@ autoUpdater.allowDowngrade = false;   // never auto-install an older version
 autoUpdater.allowPrerelease = true;   // accept newer pre-release / unpublished builds
 
 let rollbackMode = false;
-
-// Compare dotted versions ("2026.6.2", "1.2.3-beta.1"). Returns -1 / 0 / 1.
-function cmpVersion(a, b) {
-  const parse = (v) => {
-    const [core, pre = ''] = String(v).replace(/^v/i, '').split('-');
-    return { nums: core.split('.').map((n) => parseInt(n, 10) || 0), pre };
-  };
-  const A = parse(a);
-  const B = parse(b);
-  const len = Math.max(A.nums.length, B.nums.length);
-  for (let i = 0; i < len; i++) {
-    const d = (A.nums[i] || 0) - (B.nums[i] || 0);
-    if (d) return d > 0 ? 1 : -1;
-  }
-  if (A.pre === B.pre) return 0;
-  if (!A.pre) return 1;     // a release outranks a pre-release of the same core
-  if (!B.pre) return -1;
-  return A.pre > B.pre ? 1 : -1;
-}
 
 function sendUpdate(payload) {
   if (managerWindow && !managerWindow.isDestroyed()) managerWindow.webContents.send('update:status', payload);
