@@ -1,0 +1,36 @@
+name: Publish
+
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  publish:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+
+      - name: Build and publish to GitHub Releases
+        run: npx electron-builder --win --publish always
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+
+      - name: Update release notes
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/}"
+          if [ -f RELEASE-NOTES.md ]; then
+            gh release edit "$VERSION" --notes-file RELEASE-NOTES.md
+          else
+            gh release edit "$VERSION" --notes-file RELEASE-NOTES-TEMPLATE.md
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
