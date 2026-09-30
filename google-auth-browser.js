@@ -21,6 +21,7 @@
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
+const { hasGoogleSession } = require('./lib/utils');
 
 const CHROME_PATHS = [
   'C:/Program Files/Google/Chrome/Application/chrome.exe',
@@ -40,8 +41,6 @@ function findBrowser() {
 function safeExists(p) { try { return fs.existsSync(p); } catch { return false; } }
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
-// Cookies that indicate a completed Google/YouTube web session.
-const SESSION_MARKERS = /^(SAPISID|__Secure-3PAPISID|__Secure-3PSID|LOGIN_INFO|SID|SSID)$/;
 // Domains whose cookies we carry into the app session.
 const WANTED_DOMAIN = /(^|\.)(google\.com|youtube\.com|google\.[a-z.]+|ytimg\.com|googlevideo\.com)$/i;
 
@@ -124,8 +123,7 @@ async function loginViaSystemBrowser({ loginUrl, targetSession, isSignedInUrl, l
       try { url = page.url(); } catch {}
       let cookies = [];
       try { ({ cookies } = await client.send('Network.getAllCookies')); } catch {}
-      const hasSession = cookies.some((c) => /youtube\.com$/i.test(c.domain) && SESSION_MARKERS.test(c.name));
-      if (hasSession && (isSignedInUrl(url) || cookies.some((c) => c.name === 'LOGIN_INFO'))) {
+      if (hasGoogleSession(cookies) && isSignedInUrl(url)) {
         signedIn = true;
         break;
       }
@@ -135,7 +133,10 @@ async function loginViaSystemBrowser({ loginUrl, targetSession, isSignedInUrl, l
     if (!signedIn && !browser.connected) return { ok: false, reason: 'closed' };
     if (!signedIn) return { ok: false, reason: 'timeout' };
 
-    // Pull the full cookie set and import the Google/YouTube ones.
+    // The redirect back to the app is still settling — give it a moment so the
+    // target site's own cookies (Gmail's, Groups' domain cookies) are set
+    // before we snapshot, then import.
+    await sleep(1500);
     let all = [];
     try { ({ cookies: all } = await client.send('Network.getAllCookies')); } catch {}
     const wanted = all.filter((c) => WANTED_DOMAIN.test(c.domain));

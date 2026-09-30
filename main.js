@@ -4,6 +4,13 @@ const fs = require('fs');
 const crypto = require('crypto');
 const log = require('electron-log');
 const { loginViaSystemBrowser } = require('./google-auth-browser');
+const {
+  normalizeUrl, normalizeTabs, migrateApp, partitionFor,
+  isAuthUrl, isGoogleAuthUrl, cleanGoogleAuthUrl, isPostLoginUrl,
+  desktopUserAgent, cmpVersion,
+  sanitizeFileName, appIdFromArgv,
+  DEFAULT_APP_SETTINGS, DEFAULT_TAB_SETTINGS,
+} = require('./lib/utils');
 
 // ---------------------------------------------------------------------------
 // Logging — written to <userData>/logs/main.log (always writable on Windows).
@@ -82,16 +89,15 @@ const appIcons = new Map(); // appId -> nativeImage
 // Present a clean, CONSISTENT desktop-Chrome identity. Electron's default UA
 // string carries an "Electron/<ver>" token (plus the app name) that browsers
 // like Google flag as an embedded framework — so we override just the UA string
-// to a plain Chrome matching our actual engine version. Everything else
-// (Sec-CH-UA client hints, navigator.userAgentData) is left as Chromium reports
-// it natively, which is already a consistent "Chromium 126" with no Electron
-// brand. The engine here is Chromium 126 (Electron 31); the UA MUST stay in sync
-// with that major version — a mismatch (e.g. claiming Chrome 137 on a 126
-// engine) is exactly the inconsistency Google's "this browser may not be secure"
-// check keys on.
-const DESKTOP_UA =
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
-  '(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
+// to a plain Chrome. Everything else (Sec-CH-UA client hints,
+// navigator.userAgentData) is left as Chromium reports it natively, which
+// already reads as a plain Chromium with no Electron brand.
+//
+// The version is read from the engine we are actually running rather than
+// written down here, so it can never claim a Chrome that disagrees with the
+// real Chromium (the inconsistency Google's "may not be secure" check keys on)
+// and can never go stale across an Electron upgrade.
+const DESKTOP_UA = desktopUserAgent(process.versions.chrome);
 app.userAgentFallback = DESKTOP_UA;
 
 // Download an image URL (no CORS limits in main) into a nativeImage.
@@ -132,13 +138,6 @@ function applyAppIcon(appId, img) {
 // ---------------------------------------------------------------------------
 // Persistent store
 // ---------------------------------------------------------------------------
-const {
-  normalizeUrl, normalizeTabs, migrateApp, partitionFor,
-  isAuthUrl, isGoogleAuthUrl, cleanGoogleAuthUrl, cmpVersion,
-  sanitizeFileName, appIdFromArgv,
-  DEFAULT_APP_SETTINGS, DEFAULT_TAB_SETTINGS,
-} = require('./lib/utils');
-
 const STORE_PATH = path.join(app.getPath('userData'), 'apps.json');
 
 function loadApps() {
@@ -276,7 +275,7 @@ ipcMain.on('picker:cancel', () => { if (activePicker) activePicker.finish(null);
 // ---------------------------------------------------------------------------
 // The desktop-Chrome UA is applied globally via app.userAgentFallback (see top
 // of file); Sec-CH-UA client hints and navigator.userAgentData are left as
-// Chromium reports them natively — a consistent "Chromium 126" identity.
+// Chromium reports them natively, matching the UA's version.
 function setupSession(appId, tab) {
   const ses = session.fromPartition(partitionFor(tab));
   const allow = (permission) => {
@@ -359,12 +358,9 @@ async function startGoogleAuthViaBrowser(authUrl, guestContents) {
     const res = await loginViaSystemBrowser({
       loginUrl: cleanUrl,
       targetSession: guestContents.session,
-      isSignedInUrl: (u) => {
-        try {
-          const parsed = new URL(u);
-          return /(^|\.)youtube\.com$/i.test(parsed.hostname) && !/\/signin/i.test(parsed.pathname);
-        } catch { return false; }
-      },
+      // Done when the login leaves Google's account domain for whatever
+      // `continue=` target sent us there — Gmail, Groups, YT Music alike.
+      isSignedInUrl: isPostLoginUrl,
       log: (...a) => devLog(...a),
     });
     devLog('[sysauth] result', res);
