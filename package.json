@@ -1,6 +1,6 @@
 {
   "name": "web-to-desktop-app",
-  "version": "2026.7.3",
+  "version": "2026.9.1",
   "description": "Turn any website into its own Windows desktop application.",
   "main": "main.js",
   "author": "Bert",
@@ -60,8 +60,8 @@
   },
   "devDependencies": {
     "dotenv": "^17.4.2",
-    "electron": "^31.0.0",
-    "electron-builder": "^24.13.3",
+    "electron": "^44.3.0",
+    "electron-builder": "^26.15.3",
     "jest": "^30.4.2"
   }
 }

@@ -17,7 +17,7 @@ npm run test:e2e   # Run e2e tests (Playwright, requires display)
 
 **Web to Desktop** is a Windows desktop application that wraps websites into isolated desktop apps. Each app can have multiple tabs (each with its own session, cookies, and settings), draggable/reorderable tabs, split-pane views, detachable windows, and Windows integration (notifications with sound, taskbar badges, tray icon, startup launch).
 
-**Key tech:** Electron 31+, Node 18+, electron-builder (NSIS), electron-updater (GitHub releases), electron-log.
+**Key tech:** Electron 44+, Node 20+, electron-builder (NSIS), electron-updater (GitHub releases), electron-log.
 
 ## Architecture
 
