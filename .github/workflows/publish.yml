@@ -18,6 +18,26 @@ jobs:
       - run: npm ci
       - run: npm test
 
+      # electron-builder creates one publisher per artifact and they race:
+      # each calls getOrCreateRelease(), both see "release doesn't exist", and
+      # both create one — which left the installer and its .blockmap in two
+      # separate draft releases on v2026.9.1 and v2026.10.1. Creating the draft
+      # first closes that window: getOrCreateRelease() matches on tag_name and
+      # returns an existing draft immediately, so both publishers just upload.
+      - name: Create the draft release up front
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          NOTES=RELEASE-NOTES.md
+          [ -f "$NOTES" ] || NOTES=RELEASE-NOTES-TEMPLATE.md
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists - reusing it."
+          else
+            gh release create "$TAG" --draft --title "$TAG" --notes-file "$NOTES" --target "$GITHUB_SHA"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       # GITHUB_TOKEN is injected into every run automatically and is scoped to
       # this repo by the `permissions: contents: write` above — which is all a
       # release upload needs. electron-builder reads the token from GH_TOKEN,
