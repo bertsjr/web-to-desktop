@@ -18,10 +18,16 @@ jobs:
       - run: npm ci
       - run: npm test
 
+      # GITHUB_TOKEN is injected into every run automatically and is scoped to
+      # this repo by the `permissions: contents: write` above — which is all a
+      # release upload needs. electron-builder reads the token from GH_TOKEN,
+      # so map it across. Using a PAT secret here instead just adds something
+      # that silently expires (and the `GH_TOKEN` secret was never created,
+      # so this step failed with "Personal Access Token is not set").
       - name: Build and publish to GitHub Releases
         run: npx electron-builder --win --publish always
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Update release notes
         shell: bash
@@ -33,4 +39,4 @@ jobs:
             gh release edit "$VERSION" --notes-file RELEASE-NOTES-TEMPLATE.md
           fi
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

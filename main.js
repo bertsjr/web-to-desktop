@@ -7,6 +7,7 @@ const { loginViaSystemBrowser } = require('./google-auth-browser');
 const {
   normalizeUrl, normalizeTabs, migrateApp, partitionFor,
   isAuthUrl, isGoogleAuthUrl, cleanGoogleAuthUrl, isPostLoginUrl,
+  isInternalNavigation,
   desktopUserAgent, cmpVersion,
   sanitizeFileName, appIdFromArgv,
   DEFAULT_APP_SETTINGS, DEFAULT_TAB_SETTINGS,
@@ -477,6 +478,14 @@ app.on('web-contents-created', (_e, contents) => {
         // auth provider → app (e.g. login.microsoftonline.com → Outlook).
         if (isAuthUrl(url) || isAuthUrl(curr)) {
           devLog('[will-navigate] → allowing auth navigation in-app', url);
+          return;
+        }
+        // The site relocating itself across origins it owns — Teams redirects
+        // teams.microsoft.com → teams.cloud.microsoft on every launch. Shelling
+        // that out hands the whole app to the browser and leaves this window
+        // stranded, so keep same-app navigation in the webview.
+        if (isInternalNavigation(curr, url)) {
+          devLog('[will-navigate] → same app, keeping in-app', url);
           return;
         }
         const downloadExts = /\.(docx?|xlsx?|pptx?|pdf|zip|rar|7z|gz|tar|csv|txt|exe|msi|dmg|pkg|ics|eml|msg|odt|ods|odp|rtf|mp3|mp4|wav|avi|mov|png|jpe?g|gif|svg|bmp|webp)(\?.*)?$/i;

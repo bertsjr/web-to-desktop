@@ -240,7 +240,7 @@ npm run test:e2e      # Requires @playwright/test installed and a display
 - Triggered by pushing a `v*` tag (e.g., `git tag v2026.7.3 && git push --tags`).
 - Runs tests, builds the NSIS installer, publishes to GitHub Releases.
 - Updates the release body from `RELEASE-NOTES.md` (or `RELEASE-NOTES-TEMPLATE.md` if not present).
-- Requires `GH_TOKEN` repository secret (Settings > Secrets > Actions).
+- Uses the automatically-provided `GITHUB_TOKEN` (the job declares `permissions: contents: write`). No repository secret to create or rotate.
 
 ### Local Publish
 
