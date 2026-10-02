@@ -7,6 +7,8 @@ const {
   isGoogleAuthUrl,
   cleanGoogleAuthUrl,
   isPostLoginUrl,
+  isInternalNavigation,
+  registrableDomain,
   hasGoogleSession,
   desktopUserAgent,
   cmpVersion,
@@ -216,6 +218,82 @@ describe('cleanGoogleAuthUrl', () => {
     const url = 'https://accounts.google.com/signin?continue=https://youtube.com';
     const result = cleanGoogleAuthUrl(url);
     expect(result).toContain('continue=');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// registrableDomain
+// ---------------------------------------------------------------------------
+describe('registrableDomain', () => {
+  test('reduces subdomains to the registrable domain', () => {
+    expect(registrableDomain('mail.google.com')).toBe('google.com');
+    expect(registrableDomain('a.b.c.example.com')).toBe('example.com');
+    expect(registrableDomain('example.com')).toBe('example.com');
+  });
+
+  test('keeps two-part public suffixes intact', () => {
+    expect(registrableDomain('shop.example.co.uk')).toBe('example.co.uk');
+    expect(registrableDomain('example.co.uk')).toBe('example.co.uk');
+  });
+
+  test('handles single labels and junk', () => {
+    expect(registrableDomain('localhost')).toBe('localhost');
+    expect(registrableDomain('')).toBe('');
+    expect(registrableDomain(null)).toBe('');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isInternalNavigation
+// ---------------------------------------------------------------------------
+describe('isInternalNavigation', () => {
+  test('Teams relocating to its new domain is internal', () => {
+    // Regression: Teams redirects itself here on every launch. Treating it as
+    // an outbound link opened the whole app in the external browser and left
+    // the app window stranded.
+    expect(isInternalNavigation(
+      'https://teams.microsoft.com/v2/',
+      'https://teams.cloud.microsoft/?ocdiRedirect=index'
+    )).toBe(true);
+    expect(isInternalNavigation(
+      'https://teams.microsoft.com/v2/',
+      'https://teams.cloud.microsoft/?loginHint=x%40y.net&ocdiRedirect=core-policy'
+    )).toBe(true);
+  });
+
+  test('other Microsoft 365 suite hops are internal', () => {
+    expect(isInternalNavigation('https://outlook.cloud.microsoft/mail/', 'https://outlook.office.com/mail/')).toBe(true);
+    expect(isInternalNavigation('https://teams.microsoft.com/', 'https://x.sharepoint.com/sites/a')).toBe(true);
+  });
+
+  test('same registrable domain is internal', () => {
+    expect(isInternalNavigation('https://mail.google.com/', 'https://groups.google.com/a/x/g/y')).toBe(true);
+    expect(isInternalNavigation('https://app.example.com/', 'https://cdn.example.com/f')).toBe(true);
+    expect(isInternalNavigation('https://a.example.co.uk/', 'https://b.example.co.uk/')).toBe(true);
+  });
+
+  test('identical host is internal', () => {
+    expect(isInternalNavigation('https://teams.microsoft.com/v2/', 'https://teams.microsoft.com/v2/x')).toBe(true);
+  });
+
+  test('genuinely outbound links stay outbound', () => {
+    expect(isInternalNavigation('https://teams.microsoft.com/v2/', 'https://github.com/foo')).toBe(false);
+    expect(isInternalNavigation('https://mail.google.com/', 'https://example.com/')).toBe(false);
+    // Unrelated vendors must not be merged just because both are in families.
+    expect(isInternalNavigation('https://mail.google.com/', 'https://teams.cloud.microsoft/')).toBe(false);
+  });
+
+  test('lookalike hosts are not treated as internal', () => {
+    expect(isInternalNavigation('https://teams.microsoft.com/', 'https://microsoft.com.evil.test/')).toBe(false);
+    expect(isInternalNavigation('https://teams.microsoft.com/', 'https://evil-microsoft.com/')).toBe(false);
+    expect(isInternalNavigation('https://mail.google.com/', 'https://notgoogle.com/')).toBe(false);
+  });
+
+  test('non-http(s) and unparseable input is not internal', () => {
+    expect(isInternalNavigation('https://teams.microsoft.com/', 'msteams://call')).toBe(false);
+    expect(isInternalNavigation('https://teams.microsoft.com/', 'about:blank')).toBe(false);
+    expect(isInternalNavigation('', 'https://teams.cloud.microsoft/')).toBe(false);
+    expect(isInternalNavigation(null, null)).toBe(false);
   });
 });
 

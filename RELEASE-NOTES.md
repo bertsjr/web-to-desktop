@@ -1,28 +1,34 @@
-# v2026.9.1
-
-## What's New
-
-### Modern browser engine — no more "unsupported browser" banners
-- **Electron 31 → 44** (Chromium 126 → 152, Node 24). Gmail, Google Groups and Teams had begun showing "your browser is no longer supported" banners inside wrapped tabs because the bundled Chromium was years behind what those sites accept.
-- **The user-agent is now derived from the engine**, not hardcoded. Previously the UA string claimed `Chrome/126.0.0.0` as a literal, which silently drifted out of sync on every Electron upgrade — and a UA that disagrees with the real Chromium is exactly the inconsistency Google's "this browser may not be secure" check keys on. `desktopUserAgent(process.versions.chrome)` builds it from the running engine and throws rather than emit a bogus version.
-- `Sec-CH-UA` client hints and `navigator.userAgentData` are left as Chromium reports them, so the whole identity is self-consistent and carries no Electron token.
-- **electron-builder 24 → 26**, required for packaging Electron 44.
+# v2026.10.1
 
 ## Bug Fixes
 
-### Google sign-in now works for Gmail and Google Groups tabs
-The system-browser sign-in flow was written for YouTube Music and had hardcoded that assumption: it decided the login was finished by looking for a **youtube.com** session cookie. A Gmail or Google Groups sign-in never touches youtube.com, so after the user authenticated successfully the flow never registered it, ran out its full 5-minute timeout, and imported **zero cookies** — the tab reloaded still signed out, with no error shown.
+### Teams no longer launches itself in your browser
 
-- Completion is now determined by `hasGoogleSession(cookies)` (session cookies on `google.com` **or** `youtube.com`) **and** `isPostLoginUrl(url)` (the flow has left `accounts.google.com` for its `continue=` target). Both are pure functions in `lib/utils.js` with regression tests.
-- Interstitial pages — account chooser, password, 2FA, consent, and the `youtube.com/signin` hop — correctly count as still in progress.
-- Cookie harvesting now waits for the redirect back to the app to settle, so the target site's own cookies are captured.
-- YouTube Music sign-in is unaffected.
+Opening the Teams app opened **Teams in Chrome** instead, leaving the app window stranded — and it happened on every launch.
+
+Teams relocates itself from `teams.microsoft.com` to `teams.cloud.microsoft` (Microsoft's newer domain) as soon as it loads. The webview's navigation rule sent *any* main-frame navigation to a different origin out to the default browser unless it was a known auth host or looked like a file download, so the app handed Teams to Chrome and stopped.
+
+`will-navigate` cannot distinguish a redirect the site performed from a link the user clicked — Electron exposes no user-gesture flag on the event — so the rule now recognises a site relocating itself across origins it owns:
+
+- Same host, or the same registrable domain (`mail.google.com` → `groups.google.com`).
+- The same vendor app suite (`teams.microsoft.com` → `teams.cloud.microsoft`, `outlook.cloud.microsoft` → `outlook.office.com`, SharePoint/OneDrive/Office).
+
+Genuinely outbound links still open in your default browser, and lookalike hosts (`microsoft.com.evil.test`, `evil-microsoft.com`) are never treated as internal.
+
+This also restores the Teams unread badge, which had been dead for the same reason — the tab never finished loading, so there was no title to read a count from.
+
+### Tag-triggered publishing actually works now
+
+The publish workflow referenced a `GH_TOKEN` repository secret that was never created, so the expression expanded to an empty string and electron-builder aborted with "Personal Access Token is not set". It now uses the automatically-provided `GITHUB_TOKEN`, which the job's existing `contents: write` permission already covers — nothing to create, rotate, or let expire.
+
+## What's New
+- (Nothing — this is a fix-only release.)
 
 ## Breaking Changes
 - (None)
 
 ## Notes
-- **`lib/utils.js`, `test/utils.test.js` and `.github/workflows/` are included in this release.** They had been created but never committed, so `main.js`'s `require('./lib/utils')` could not resolve in a fresh clone, CI never ran on GitHub, and tag-triggered publishing had no workflow to trigger. Local installer builds were unaffected because electron-builder packages the working directory.
-- Unit tests: 53 Jest tests (was 41) — new coverage for `desktopUserAgent`, `isPostLoginUrl` and `hasGoogleSession`.
-- **Multi-account `/u/N/` tab URLs:** the sign-in window uses a throwaway Chrome profile, so the account signed in there is always index `0`. A tab URL pinned to `/u/1/` (copied from a normal browser, where it may be the second account) will not resolve against the imported session. Use `/u/0/` or `?authuser=<email>` for those tabs.
-- Verified: 53 unit tests pass; a real `<webview>` on Electron 44 presents `Chrome/152.0.0.0` to the server with client hints reporting Chromium 152 and no Electron token; the app boots with windows and webviews created cleanly; `npm run dist` packages successfully on electron-builder 26.
+- Unit tests: 63 (was 53). New coverage for `isInternalNavigation` and `registrableDomain`, including the exact Teams redirect as a regression test and lookalike-host rejection.
+- Verified against a real signed-in Teams session: before the fix the launch logged two `openExternal (cross-origin)` hops to `teams.cloud.microsoft`; after it, zero, and Teams loads in-app with its chat list and unread count intact.
+- **Known gap:** `window.open` / `target="_blank"` navigations are still sent to the browser without the same same-app check, so an internal Teams popup (whiteboard, a meeting window) may still open externally. Not addressed here — no reproduction yet.
+- Still outstanding from 2026.9.1: multi-account `/u/N/` tab URLs. The Google sign-in window uses a throwaway profile, so the account signed in there is always index `0`; a tab pinned to `/u/1/` will not resolve against the imported session. Use `/u/0/` or `?authuser=<email>`.
